@@ -99,7 +99,8 @@ function resolveElementColor(
   }
 
   return {
-    fill: fill || "none",
+    // SVG spec: default fill is black, default stroke is none
+    fill: fill || "#000000",
     stroke: stroke || "none",
   };
 }
@@ -208,26 +209,6 @@ function extractElements(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Detect fill vs stroke mode                                         */
-/* ------------------------------------------------------------------ */
-
-type SVGMode = "fill" | "stroke" | "mixed";
-
-function detectMode(elements: ParsedElement[]): SVGMode {
-  let filledCount = 0;
-  let strokedCount = 0;
-  for (const el of elements) {
-    if (el.fill !== "none") filledCount++;
-    if (el.stroke !== "none") strokedCount++;
-  }
-  if (filledCount > 0 && strokedCount === 0) return "fill";
-  if (strokedCount > 0 && filledCount === 0) return "stroke";
-  if (filledCount > strokedCount * 2) return "fill";
-  if (strokedCount > filledCount * 2) return "stroke";
-  return "mixed";
-}
-
-/* ------------------------------------------------------------------ */
 /*  Fallback grouping (no AI)                                          */
 /* ------------------------------------------------------------------ */
 
@@ -245,15 +226,12 @@ function fallbackGrouping(uniqueColors: string[]): ColorGroup[] {
 
 function buildSVG(
   viewBox: string,
-  mode: SVGMode,
   groups: ColorGroup[],
-  elementsByColor: Map<string, ParsedElement[]>,
-  strokeAttrs: { linecap: string; linejoin: string }
+  elementsByColor: Map<string, ParsedElement[]>
 ): string {
   const paths: string[] = [];
 
   for (const group of groups) {
-    // Collect all elements whose colour belongs to this group
     const groupElements: ParsedElement[] = [];
     for (const inputColor of group.inputColors) {
       const els = elementsByColor.get(inputColor);
@@ -261,35 +239,18 @@ function buildSVG(
     }
     if (groupElements.length === 0) continue;
 
-    // Build compound path data
-    const compoundD = groupElements.map((el) => el.d).join(" ");
-
     const color = group.representativeColor;
+
+    // Skip invisible elements (no fill AND no stroke)
+    if (color === "none") continue;
+
+    const compoundD = groupElements.map((el) => el.d).join(" ");
     const layerComment = `  <!-- ${group.name} (${groupElements.length} paths) -->`;
 
-    if (color === "none" || mode === "stroke") {
-      // Stroke-based layer
-      const strokeColor =
-        mode === "stroke" && color !== "none"
-          ? color
-          : groupElements[0]?.stroke !== "none"
-            ? groupElements[0].stroke
-            : "#000000";
-      const cap = strokeAttrs.linecap
-        ? ` stroke-linecap="${strokeAttrs.linecap}"`
-        : "";
-      const join = strokeAttrs.linejoin
-        ? ` stroke-linejoin="${strokeAttrs.linejoin}"`
-        : "";
-      paths.push(
-        `${layerComment}\n  <path d="${compoundD}" fill="none" stroke="${strokeColor}"${cap}${join}/>`
-      );
-    } else {
-      // Fill-based layer
-      paths.push(
-        `${layerComment}\n  <path d="${compoundD}" fill="${color}"/>`
-      );
-    }
+    // Always output filled paths — cutting machines cut around fill outlines
+    paths.push(
+      `${layerComment}\n  <path d="${compoundD}" fill="${color}"/>`
+    );
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${paths.join("\n")}\n</svg>`;
@@ -310,13 +271,11 @@ export async function consolidateSVG(
     return { svg: svgContent, layers: [] };
   }
 
-  // 2. Detect mode
-  const mode = detectMode(elements);
-
-  // 3. Determine the "colour key" for each element
+  // 2. Determine the "colour key" — use whatever is visible (prefer fill, fall back to stroke)
   const colorKey = (el: ParsedElement): string => {
-    if (mode === "stroke") return el.stroke !== "none" ? el.stroke : "none";
-    return el.fill !== "none" ? el.fill : "none";
+    if (el.fill !== "none") return el.fill;
+    if (el.stroke !== "none") return el.stroke;
+    return "none";
   };
 
   // 4. Group elements by their colour
@@ -329,16 +288,7 @@ export async function consolidateSVG(
 
   const uniqueColors = [...elementsByColor.keys()];
 
-  // 5. Determine stroke attributes to preserve (from the first class that has them)
-  let strokeLinecap = "";
-  let strokeLinejoin = "";
-  for (const style of classStyles.values()) {
-    if (style.strokeLinecap) strokeLinecap = style.strokeLinecap;
-    if (style.strokeLinejoin) strokeLinejoin = style.strokeLinejoin;
-    if (strokeLinecap && strokeLinejoin) break;
-  }
-
-  // 6. Ask AI for colour grouping (or fall back)
+  // 5. Ask AI for colour grouping (or fall back)
   let colorGroups: ColorGroup[];
 
   if (uniqueColors.length <= 1) {
@@ -374,17 +324,12 @@ export async function consolidateSVG(
   const viewBox =
     svgContent.match(/viewBox="([^"]*)"/)?.[1] ?? "0 0 100 100";
 
-  // 8. Build the consolidated SVG
-  const svg = buildSVG(
-    viewBox,
-    mode,
-    colorGroups,
-    elementsByColor,
-    { linecap: strokeLinecap, linejoin: strokeLinejoin }
-  );
+  // 7. Build the consolidated SVG
+  const svg = buildSVG(viewBox, colorGroups, elementsByColor);
 
-  // 9. Build layer info
+  // 8. Build layer info (exclude invisible "none" groups)
   const layers: ConsolidationLayer[] = colorGroups
+    .filter((g) => g.representativeColor !== "none")
     .map((g) => {
       const count = g.inputColors.reduce(
         (sum, c) => sum + (elementsByColor.get(c)?.length ?? 0),
