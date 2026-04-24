@@ -3,6 +3,11 @@ import { analyzeImageForCutting } from "@/lib/openai";
 import { traceImage } from "@/lib/tracer";
 import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
 import { consolidateSVG } from "@/lib/svg-consolidator";
+import {
+  validateForCutting,
+  buildChangelog,
+  extractInputStats,
+} from "@/lib/svg-validator";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -32,11 +37,20 @@ export async function POST(request: NextRequest) {
     if (mimeType === "image/svg+xml") {
       const svgContent = buffer.toString("utf-8");
 
-      // 1. Structural checks & auto-fixes (close paths, remove gradients, etc.)
-      const { svg: fixedSVG, issues } = checkAndFixSVG(svgContent);
+      // Snapshot input stats before any changes
+      const inputStats = extractInputStats(svgContent);
+
+      // 1. Structural checks & auto-fixes
+      const { svg: fixedSVG } = checkAndFixSVG(svgContent);
 
       // 2. Consolidate into compound paths with AI colour grouping
       const { svg: consolidated, layers } = await consolidateSVG(fixedSVG);
+
+      // 3. Validate the OUTPUT against cutting requirements
+      const validation = validateForCutting(consolidated);
+
+      // 4. Build human-readable changelog
+      const changelog = buildChangelog(inputStats, consolidated, layers.length);
 
       return NextResponse.json({
         success: true,
@@ -47,11 +61,9 @@ export async function POST(request: NextRequest) {
           colorCount: layers.length,
           isMultiLayered: layers.length > 1,
           layers,
-          suggestions: issues
-            .filter((i) => !i.fixed)
-            .map((i) => i.description),
-          issues: issues.filter((i) => !i.fixed),
         },
+        validation,
+        changelog,
       });
     }
 
@@ -88,11 +100,24 @@ export async function POST(request: NextRequest) {
         backgroundColor: analysis.backgroundColor,
       });
 
-      // Consolidate traced output into compound paths too
+      // Consolidate
       const { svg: consolidated, layers } = await consolidateSVG(tracedSVG);
-
-      // Fall back to SVGO-only if consolidation returned nothing useful
       const finalSVG = layers.length > 0 ? consolidated : optimizeSVG(tracedSVG);
+
+      // Validate
+      const validation = validateForCutting(finalSVG);
+
+      // Changelog for raster is simpler — describe the conversion
+      const changelog = [
+        {
+          action: "consolidated" as const,
+          detail: `Traced raster image into ${layers.length || 1} vector layer${(layers.length || 1) !== 1 ? "s" : ""} with AI-optimised settings.`,
+        },
+        ...(analysis.suggestions?.map((s: string) => ({
+          action: "info" as const,
+          detail: s,
+        })) ?? []),
+      ];
 
       return NextResponse.json({
         success: true,
@@ -101,11 +126,13 @@ export async function POST(request: NextRequest) {
           description: analysis.description ?? "Processed image",
           originalType: mimeType.split("/")[1],
           colorCount: layers.length || (analysis.recommendedColors ?? 2),
-          isMultiLayered: (layers.length || (analysis.recommendedColors ?? 2)) > 1,
+          isMultiLayered:
+            (layers.length || (analysis.recommendedColors ?? 2)) > 1,
           layers: layers.length > 0 ? layers : undefined,
-          suggestions: analysis.suggestions ?? [],
           complexity: analysis.complexity,
         },
+        validation,
+        changelog,
       });
     }
 

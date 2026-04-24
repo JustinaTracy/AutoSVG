@@ -47,17 +47,38 @@ interface Analysis {
   originalType: string;
   colorCount: number;
   isMultiLayered: boolean;
-  suggestions: string[];
+  suggestions?: string[];
   layers?: LayerInfo[];
   issues?: Issue[];
-  overallScore?: number;
   complexity?: string;
+}
+
+interface ChecklistItem {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+  severity: "critical" | "warning" | "info";
+}
+
+interface Validation {
+  checklist: ChecklistItem[];
+  status: "pass" | "review" | "fail";
+  passCount: number;
+  totalCount: number;
+}
+
+interface ChangelogEntry {
+  action: string;
+  detail: string;
 }
 
 interface ProcessResult {
   success: boolean;
   svg: string;
   analysis: Analysis;
+  validation?: Validation;
+  changelog?: ChangelogEntry[];
   error?: string;
 }
 
@@ -319,7 +340,10 @@ export default function Home() {
 
           {/* ── DONE: Results ─────────────────────────────────── */}
           {status === "done" && result && (
-            <div className="flex flex-col gap-8">
+            <div className="flex flex-col gap-6">
+              {/* Status banner */}
+              <StatusBanner validation={result.validation} />
+
               {/* Previews */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 {/* Original */}
@@ -351,13 +375,33 @@ export default function Home() {
                     <h3 className="font-heading text-lg text-plum-wine-900">
                       Cut-Ready SVG
                     </h3>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-sage-success-50 px-3 py-1 font-body text-xs font-medium text-sage-success-500">
-                      <CheckCircle size={12} />
-                      Ready
-                    </span>
+                    {result.validation && (
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-3 py-1 font-body text-xs font-medium ${
+                          result.validation.status === "pass"
+                            ? "bg-sage-success-50 text-sage-success-500"
+                            : result.validation.status === "review"
+                              ? "bg-lemon-50 text-lemon-500"
+                              : "bg-sunset-red-50 text-sunset-red-500"
+                        }`}
+                      >
+                        {result.validation.status === "pass" ? (
+                          <><CheckCircle size={12} /> Ready</>
+                        ) : result.validation.status === "review" ? (
+                          <><AlertTriangle size={12} /> Review</>
+                        ) : (
+                          <><FileWarning size={12} /> Issues</>
+                        )}
+                      </span>
+                    )}
                   </div>
-                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100"
-                       style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='10' height='10' fill='%23f0f0f0'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f0f0f0'/%3E%3C/svg%3E\")" }}>
+                  <div
+                    className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100"
+                    style={{
+                      backgroundImage:
+                        "url(\"data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='10' height='10' fill='%23f0f0f0'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f0f0f0'/%3E%3C/svg%3E\")",
+                    }}
+                  >
                     {svgBlobUrl && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -370,132 +414,166 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Analysis card */}
-              <div className="rounded-2xl border border-neutral-200 bg-alabaster p-6 shadow-sm">
-                <h3 className="mb-4 flex items-center gap-2 font-heading text-xl text-plum-wine-900">
-                  <Info size={18} className="text-plum-wine-500" />
-                  Analysis
-                </h3>
-
-                <p className="mb-4 font-body text-base leading-relaxed text-plum-wine-800">
-                  {result.analysis.description}
-                </p>
-
-                <div className="mb-4 flex flex-wrap gap-3">
-                  <Badge
-                    label={`${result.analysis.colorCount} layer${result.analysis.colorCount !== 1 ? "s" : ""}`}
-                    icon={<Layers size={12} />}
-                  />
-                  {result.analysis.originalType && (
-                    <Badge
-                      label={`Source: ${result.analysis.originalType.toUpperCase()}`}
-                    />
-                  )}
+              {/* What Changed */}
+              {result.changelog && result.changelog.length > 0 && (
+                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
+                  <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                    <Sparkles size={16} className="text-plum-wine-500" />
+                    What Changed
+                  </h3>
+                  <ul className="space-y-2">
+                    {result.changelog.map((entry, i) => (
+                      <li
+                        key={i}
+                        className="flex items-start gap-2.5 font-body text-sm"
+                      >
+                        <span
+                          className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-white text-[10px] font-bold ${
+                            entry.action === "fixed"
+                              ? "bg-sage-gray-400"
+                              : entry.action === "removed"
+                                ? "bg-dusty-rose-300"
+                                : entry.action === "consolidated"
+                                  ? "bg-plum-wine-500"
+                                  : entry.action === "warning"
+                                    ? "bg-lemon-500"
+                                    : "bg-neutral-400"
+                          }`}
+                        >
+                          {entry.action === "fixed"
+                            ? "F"
+                            : entry.action === "removed"
+                              ? "R"
+                              : entry.action === "consolidated"
+                                ? "C"
+                                : entry.action === "warning"
+                                  ? "!"
+                                  : "i"}
+                        </span>
+                        <span className="text-plum-wine-800">
+                          {entry.detail}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
+              )}
 
-                {/* Layers */}
-                {result.analysis.layers && result.analysis.layers.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="mb-2 font-body text-sm font-semibold text-plum-wine-700">
-                      Cut Layers
-                    </h4>
-                    <div className="flex flex-wrap gap-2">
-                      {result.analysis.layers.map((layer, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 font-body text-sm shadow-sm"
-                        >
-                          <span
-                            className="inline-block h-4 w-4 rounded-full border border-neutral-300"
-                            style={{
-                              backgroundColor:
-                                layer.color === "none"
-                                  ? "transparent"
-                                  : layer.color,
-                            }}
-                          />
-                          <span className="font-medium text-plum-wine-800">
-                            {layer.name}
-                          </span>
-                          <span className="text-xs text-plum-wine-400">
-                            {layer.pathCount} path{layer.pathCount !== 1 ? "s" : ""}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+              {/* Layers */}
+              {result.analysis.layers && result.analysis.layers.length > 0 && (
+                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
+                  <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                    <Layers size={16} className="text-plum-wine-500" />
+                    Cut Layers ({result.analysis.layers.length})
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {result.analysis.layers.map((layer, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2.5 rounded-xl bg-alabaster px-4 py-2.5 font-body text-sm"
+                      >
+                        <span
+                          className="inline-block h-5 w-5 rounded-full border border-neutral-300 shadow-sm"
+                          style={{
+                            backgroundColor:
+                              layer.color === "none"
+                                ? "transparent"
+                                : layer.color,
+                          }}
+                        />
+                        <span className="font-medium text-plum-wine-800">
+                          {layer.name}
+                        </span>
+                        <span className="rounded-full bg-plum-wine-50 px-2 py-0.5 text-xs text-plum-wine-500">
+                          {layer.pathCount}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Issues */}
-                {result.analysis.issues && result.analysis.issues.length > 0 && (
-                  <div className="mb-4">
-                    <h4 className="mb-2 font-body text-sm font-semibold text-plum-wine-700">
-                      Issues Detected
-                    </h4>
-                    <ul className="space-y-2">
-                      {result.analysis.issues.map((issue, i) => (
-                        <li
-                          key={i}
-                          className="flex items-start gap-2 rounded-xl bg-white px-4 py-3 font-body text-sm"
-                        >
-                          {issue.severity === "high" ? (
-                            <FileWarning
-                              size={16}
-                              className="mt-0.5 shrink-0 text-sunset-red-500"
-                            />
-                          ) : (
-                            <AlertTriangle
-                              size={16}
-                              className="mt-0.5 shrink-0 text-lemon-500"
-                            />
-                          )}
-                          <span className="text-plum-wine-800">
-                            {issue.description}
-                            {issue.fixed && (
-                              <span className="ml-1 font-semibold text-sage-success-500">
-                                (auto-fixed)
+              {/* Cuttability Checklist */}
+              {result.validation && (
+                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
+                  <h3 className="mb-1 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                    <Scissors size={16} className="text-plum-wine-500" />
+                    Cuttability Checklist
+                  </h3>
+                  <p className="mb-4 font-body text-xs text-plum-wine-400">
+                    {result.validation.passCount} of{" "}
+                    {result.validation.totalCount} checks passed
+                  </p>
+                  <ul className="space-y-1">
+                    {result.validation.checklist.map((item) => (
+                      <li
+                        key={item.id}
+                        className="flex items-start gap-2.5 rounded-xl px-3 py-2.5 transition-colors hover:bg-alabaster"
+                      >
+                        {item.passed ? (
+                          <CheckCircle
+                            size={18}
+                            className="mt-0.5 shrink-0 text-sage-gray-400"
+                          />
+                        ) : item.severity === "critical" ? (
+                          <FileWarning
+                            size={18}
+                            className="mt-0.5 shrink-0 text-sunset-red-500"
+                          />
+                        ) : item.severity === "warning" ? (
+                          <AlertTriangle
+                            size={18}
+                            className="mt-0.5 shrink-0 text-lemon-500"
+                          />
+                        ) : (
+                          <Info
+                            size={18}
+                            className="mt-0.5 shrink-0 text-plum-wine-300"
+                          />
+                        )}
+                        <div className="min-w-0">
+                          <p
+                            className={`font-body text-sm font-medium ${
+                              item.passed
+                                ? "text-plum-wine-700"
+                                : item.severity === "critical"
+                                  ? "text-sunset-red-600"
+                                  : "text-plum-wine-800"
+                            }`}
+                          >
+                            {item.label}
+                            {!item.passed && item.severity === "critical" && (
+                              <span className="ml-1.5 rounded-full bg-sunset-red-50 px-2 py-0.5 text-[10px] font-bold uppercase text-sunset-red-500">
+                                Critical
                               </span>
                             )}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {/* Suggestions */}
-                {result.analysis.suggestions &&
-                  result.analysis.suggestions.length > 0 && (
-                    <div>
-                      <h4 className="mb-2 font-body text-sm font-semibold text-plum-wine-700">
-                        Tips
-                      </h4>
-                      <ul className="space-y-1.5">
-                        {result.analysis.suggestions.map((tip, i) => (
-                          <li
-                            key={i}
-                            className="flex items-start gap-2 font-body text-sm text-plum-wine-600"
-                          >
-                            <Sparkles
-                              size={14}
-                              className="mt-0.5 shrink-0 text-plum-wine-400"
-                            />
-                            {tip}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-              </div>
+                          </p>
+                          <p className="font-body text-xs leading-relaxed text-plum-wine-400">
+                            {item.detail}
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {/* Action buttons */}
               <div className="flex flex-wrap justify-center gap-4">
                 <button
                   onClick={handleDownload}
-                  className="inline-flex items-center gap-2 rounded-full bg-plum-wine-700 px-8 py-3.5 font-body text-base font-semibold text-white shadow-sm transition-colors hover:bg-plum-wine-800"
+                  className={`inline-flex items-center gap-2 rounded-full px-8 py-3.5 font-body text-base font-semibold shadow-sm transition-colors ${
+                    result.validation?.status === "fail"
+                      ? "bg-sunset-red-500 text-white hover:bg-sunset-red-600"
+                      : "bg-plum-wine-700 text-white hover:bg-plum-wine-800"
+                  }`}
                 >
                   <Download size={18} />
-                  Download Cut-Ready SVG
+                  {result.validation?.status === "fail"
+                    ? "Download Anyway (Issues Found)"
+                    : result.validation?.status === "review"
+                      ? "Download (Review Recommended)"
+                      : "Download Cut-Ready SVG"}
                 </button>
                 <button
                   onClick={handleReset}
@@ -553,17 +631,58 @@ export default function Home() {
 /*  Small helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-function Badge({
-  label,
-  icon,
-}: {
-  label: string;
-  icon?: React.ReactNode;
-}) {
+function StatusBanner({ validation }: { validation?: Validation }) {
+  if (!validation) return null;
+  const { status, passCount, totalCount } = validation;
+
+  if (status === "pass") {
+    return (
+      <div className="flex items-center gap-3 rounded-2xl bg-sage-success-50 px-6 py-4">
+        <CheckCircle size={22} className="shrink-0 text-sage-success-500" />
+        <div>
+          <p className="font-body text-sm font-semibold text-sage-gray-700">
+            Cut Ready — All {totalCount} checks passed
+          </p>
+          <p className="font-body text-xs text-sage-gray-400">
+            This file is optimised for Cricut and Silhouette machines.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (status === "review") {
+    const warns = totalCount - passCount;
+    return (
+      <div className="flex items-center gap-3 rounded-2xl bg-lemon-50 px-6 py-4">
+        <AlertTriangle size={22} className="shrink-0 text-lemon-500" />
+        <div>
+          <p className="font-body text-sm font-semibold text-plum-wine-800">
+            Review Recommended — {passCount}/{totalCount} checks passed
+          </p>
+          <p className="font-body text-xs text-plum-wine-500">
+            {warns} non-critical issue{warns !== 1 ? "s" : ""} found.
+            The file should cut but review the checklist below.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  // fail
+  const criticals = validation.checklist.filter(
+    (i) => !i.passed && i.severity === "critical"
+  ).length;
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-plum-wine-50 px-3 py-1 font-body text-xs font-medium text-plum-wine-700">
-      {icon}
-      {label}
-    </span>
+    <div className="flex items-center gap-3 rounded-2xl bg-sunset-red-50 px-6 py-4">
+      <FileWarning size={22} className="shrink-0 text-sunset-red-500" />
+      <div>
+        <p className="font-body text-sm font-semibold text-sunset-red-600">
+          Not Cut Ready — {criticals} critical issue
+          {criticals !== 1 ? "s" : ""}
+        </p>
+        <p className="font-body text-xs text-plum-wine-500">
+          Fix the critical issues below before sending to your cutting machine.
+        </p>
+      </div>
+    </div>
   );
 }
