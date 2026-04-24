@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { analyzeImageForCutting, analyzeSVGForCutting } from "@/lib/openai";
+import { analyzeImageForCutting } from "@/lib/openai";
 import { traceImage } from "@/lib/tracer";
-import { checkAndFixSVG, optimizeSVG, optimizeSVGConservative } from "@/lib/svg-utils";
+import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
+import { consolidateSVG } from "@/lib/svg-consolidator";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -31,70 +32,25 @@ export async function POST(request: NextRequest) {
     if (mimeType === "image/svg+xml") {
       const svgContent = buffer.toString("utf-8");
 
-      // Structural checks & auto-fixes
+      // 1. Structural checks & auto-fixes (close paths, remove gradients, etc.)
       const { svg: fixedSVG, issues } = checkAndFixSVG(svgContent);
 
-      // AI analysis for deeper cuttability insight
-      let aiAnalysis;
-      try {
-        aiAnalysis = await analyzeSVGForCutting(fixedSVG);
-      } catch {
-        aiAnalysis = {
-          isCuttable: true,
-          issues: [],
-          hasOpenPaths: false,
-          hasTextElements: false,
-          hasTinyDetails: false,
-          hasGradients: false,
-          colorCount: 1,
-          recommendedFixes: [],
-          overallScore: 7,
-        };
-      }
-
-      // Conservative optimise — preserve user's path data
-      const optimized = optimizeSVGConservative(fixedSVG);
-
-      // Our structural checks are ground truth.  AI issues that
-      // contradict what we actually verified get filtered out.
-      const structuralTypes = new Set(issues.map((i) => i.type));
-
-      // Map AI issue type names to the structural facts we already checked
-      const structurallyVerified = new Set([
-        "open-paths",   "hasOpenPaths",   "openPaths",
-        "text-elements","hasTextElements","textElements",
-        "gradients",    "hasGradients",
-        "filters",
-        "embedded-images",
-      ]);
-
-      // Only keep AI issues that are NOT about things we structurally verified
-      const aiOnlyIssues = (aiAnalysis.issues || [])
-        .filter((i: { type: string }) => {
-          // Skip if we already have it
-          if (structuralTypes.has(i.type)) return false;
-          // Skip if AI claims something our parser proved absent
-          if (structurallyVerified.has(i.type) && !structuralTypes.has(i.type)) return false;
-          return true;
-        })
-        .map((i: { type: string; description: string; severity: string }) => ({
-          ...i,
-          fixed: false,
-        }));
-
-      const mergedIssues = [...issues, ...aiOnlyIssues];
+      // 2. Consolidate into compound paths with AI colour grouping
+      const { svg: consolidated, layers } = await consolidateSVG(fixedSVG);
 
       return NextResponse.json({
         success: true,
-        svg: optimized,
+        svg: consolidated,
         analysis: {
-          description: "Uploaded SVG — checked and optimised for cutting.",
+          description: "Uploaded SVG — consolidated into cut-ready compound paths.",
           originalType: "svg",
-          colorCount: aiAnalysis.colorCount ?? 1,
-          isMultiLayered: (aiAnalysis.colorCount ?? 1) > 1,
-          suggestions: aiAnalysis.recommendedFixes ?? [],
-          issues: mergedIssues,
-          overallScore: aiAnalysis.overallScore ?? 7,
+          colorCount: layers.length,
+          isMultiLayered: layers.length > 1,
+          layers,
+          suggestions: issues
+            .filter((i) => !i.fixed)
+            .map((i) => i.description),
+          issues: issues.filter((i) => !i.fixed),
         },
       });
     }
@@ -112,14 +68,13 @@ export async function POST(request: NextRequest) {
       try {
         analysis = await analyzeImageForCutting(base64, mimeType);
       } catch {
-        // Fallback to sensible defaults if OpenAI is unavailable
         analysis = {
           description: "Image (AI analysis unavailable)",
           recommendedColors: 2,
           isMultiLayered: false,
           complexity: "moderate" as const,
           suggestions: [
-            "AI analysis was unavailable — the image was traced with default settings. You may want to adjust the result in your vector editor.",
+            "AI analysis was unavailable — the image was traced with default settings.",
           ],
           threshold: 128,
           backgroundColor: "#ffffff",
@@ -133,17 +88,21 @@ export async function POST(request: NextRequest) {
         backgroundColor: analysis.backgroundColor,
       });
 
-      // Optimise
-      const optimized = optimizeSVG(tracedSVG);
+      // Consolidate traced output into compound paths too
+      const { svg: consolidated, layers } = await consolidateSVG(tracedSVG);
+
+      // Fall back to SVGO-only if consolidation returned nothing useful
+      const finalSVG = layers.length > 0 ? consolidated : optimizeSVG(tracedSVG);
 
       return NextResponse.json({
         success: true,
-        svg: optimized,
+        svg: finalSVG,
         analysis: {
           description: analysis.description ?? "Processed image",
           originalType: mimeType.split("/")[1],
-          colorCount: analysis.recommendedColors ?? 2,
-          isMultiLayered: analysis.isMultiLayered ?? false,
+          colorCount: layers.length || (analysis.recommendedColors ?? 2),
+          isMultiLayered: (layers.length || (analysis.recommendedColors ?? 2)) > 1,
+          layers: layers.length > 0 ? layers : undefined,
           suggestions: analysis.suggestions ?? [],
           complexity: analysis.complexity,
         },

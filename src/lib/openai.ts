@@ -70,6 +70,62 @@ Focus on producing clean, cuttable results. Fewer colors and simpler paths are b
   return JSON.parse(response.choices[0].message.content || "{}");
 }
 
+/* ------------------------------------------------------------------ */
+/*  Colour grouping for consolidation                                  */
+/* ------------------------------------------------------------------ */
+
+export interface ColorGroup {
+  name: string;
+  representativeColor: string;
+  inputColors: string[];
+}
+
+export async function groupColorsForCutting(
+  colorStats: Array<{ color: string; count: number }>
+): Promise<ColorGroup[]> {
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "user",
+        content: `You are preparing an SVG for a vinyl cutting machine (Cricut / Silhouette).
+
+The design has these fill/stroke colours (with path counts):
+${JSON.stringify(colorStats)}
+
+For cutting, each colour layer = one material / colour of vinyl. Consolidate these into a small number of layers by grouping similar shades together.
+
+Return JSON with EXACTLY this shape:
+{
+  "groups": [
+    {
+      "name": "descriptive layer name (e.g. Green Foliage)",
+      "representativeColor": "#hex — the dominant shade for this group",
+      "inputColors": ["#hex1", "#hex2", …]
+    }
+  ]
+}
+
+Rules:
+1. Every colour in the input MUST appear in exactly one group's inputColors.
+2. Aim for roughly 2-8 groups — use your judgement based on how visually distinct the colours are. Similar shades (e.g. multiple greens) should merge.
+3. If a colour is "none", put it in its own group named "Cut Lines" with representativeColor "none".
+4. The representative colour should be the most visually prominent shade in its group.
+5. Name each layer descriptively based on what the colour likely represents.`,
+      },
+    ],
+    max_tokens: 600,
+  });
+
+  const data = JSON.parse(response.choices[0].message.content || "{}");
+  return data.groups ?? [];
+}
+
+/* ------------------------------------------------------------------ */
+/*  SVG cuttability analysis                                           */
+/* ------------------------------------------------------------------ */
+
 export async function analyzeSVGForCutting(
   svgContent: string
 ): Promise<SVGAnalysis> {

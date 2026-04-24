@@ -36,12 +36,19 @@ interface Issue {
   fixed: boolean;
 }
 
+interface LayerInfo {
+  name: string;
+  color: string;
+  pathCount: number;
+}
+
 interface Analysis {
   description: string;
   originalType: string;
   colorCount: number;
   isMultiLayered: boolean;
   suggestions: string[];
+  layers?: LayerInfo[];
   issues?: Issue[];
   overallScore?: number;
   complexity?: string;
@@ -376,15 +383,7 @@ export default function Home() {
 
                 <div className="mb-4 flex flex-wrap gap-3">
                   <Badge
-                    label={`${result.analysis.colorCount} colour${result.analysis.colorCount !== 1 ? "s" : ""}`}
-                    icon={<Layers size={12} />}
-                  />
-                  <Badge
-                    label={
-                      result.analysis.isMultiLayered
-                        ? "Multi-layer"
-                        : "Single layer"
-                    }
+                    label={`${result.analysis.colorCount} layer${result.analysis.colorCount !== 1 ? "s" : ""}`}
                     icon={<Layers size={12} />}
                   />
                   {result.analysis.originalType && (
@@ -392,13 +391,40 @@ export default function Home() {
                       label={`Source: ${result.analysis.originalType.toUpperCase()}`}
                     />
                   )}
-                  {result.analysis.overallScore != null && (
-                    <Badge
-                      label={`Score: ${result.analysis.overallScore}/10`}
-                      icon={<Sparkles size={12} />}
-                    />
-                  )}
                 </div>
+
+                {/* Layers */}
+                {result.analysis.layers && result.analysis.layers.length > 0 && (
+                  <div className="mb-4">
+                    <h4 className="mb-2 font-body text-sm font-semibold text-plum-wine-700">
+                      Cut Layers
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {result.analysis.layers.map((layer, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-2 rounded-xl bg-white px-4 py-2.5 font-body text-sm shadow-sm"
+                        >
+                          <span
+                            className="inline-block h-4 w-4 rounded-full border border-neutral-300"
+                            style={{
+                              backgroundColor:
+                                layer.color === "none"
+                                  ? "transparent"
+                                  : layer.color,
+                            }}
+                          />
+                          <span className="font-medium text-plum-wine-800">
+                            {layer.name}
+                          </span>
+                          <span className="text-xs text-plum-wine-400">
+                            {layer.pathCount} path{layer.pathCount !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Issues */}
                 {result.analysis.issues && result.analysis.issues.length > 0 && (
