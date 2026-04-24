@@ -212,12 +212,127 @@ function extractElements(
 /*  Fallback grouping (no AI)                                          */
 /* ------------------------------------------------------------------ */
 
-function fallbackGrouping(uniqueColors: string[]): ColorGroup[] {
-  return uniqueColors.map((c, i) => ({
-    name: c === "none" ? "Cut Lines" : `Layer ${i + 1}`,
-    representativeColor: c,
-    inputColors: [c],
+/* ------------------------------------------------------------------ */
+/*  Colour-distance clustering (fallback when AI is unavailable)       */
+/* ------------------------------------------------------------------ */
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  if (h.length === 3) {
+    return [
+      parseInt(h[0] + h[0], 16),
+      parseInt(h[1] + h[1], 16),
+      parseInt(h[2] + h[2], 16),
+    ];
+  }
+  return [
+    parseInt(h.substring(0, 2), 16) || 0,
+    parseInt(h.substring(2, 4), 16) || 0,
+    parseInt(h.substring(4, 6), 16) || 0,
+  ];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return (
+    "#" +
+    [r, g, b]
+      .map((v) =>
+        Math.max(0, Math.min(255, Math.round(v)))
+          .toString(16)
+          .padStart(2, "0")
+      )
+      .join("")
+  );
+}
+
+function colorDist(a: [number, number, number], b: [number, number, number]) {
+  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+}
+
+/** Determine a sensible max layer count based on unique colour count. */
+function targetGroupCount(uniqueCount: number): number {
+  if (uniqueCount <= 3) return uniqueCount;
+  if (uniqueCount <= 8) return Math.min(uniqueCount, 5);
+  if (uniqueCount <= 20) return 5;
+  return 6;
+}
+
+/**
+ * Hierarchical agglomerative clustering — merge the two closest
+ * colour groups until we reach `maxGroups`.
+ */
+function clusterColors(
+  colorStats: Array<{ color: string; count: number }>,
+  maxGroups: number
+): ColorGroup[] {
+  const visible = colorStats.filter((c) => c.color !== "none");
+  if (visible.length === 0) return [];
+
+  // Bootstrap: one cluster per colour
+  let clusters: Array<{
+    colors: Array<{ color: string; count: number }>;
+    rgb: [number, number, number];
+    totalCount: number;
+  }> = visible.map((c) => ({
+    colors: [c],
+    rgb: hexToRgb(c.color),
+    totalCount: c.count,
   }));
+
+  // Merge closest pair until at target
+  while (clusters.length > maxGroups) {
+    let minDist = Infinity;
+    let mi = 0;
+    let mj = 1;
+
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const d = colorDist(clusters[i].rgb, clusters[j].rgb);
+        if (d < minDist) {
+          minDist = d;
+          mi = i;
+          mj = j;
+        }
+      }
+    }
+
+    // Weighted-average centroid
+    const a = clusters[mi];
+    const b = clusters[mj];
+    const total = a.totalCount + b.totalCount;
+    const wa = a.totalCount / total;
+    const wb = b.totalCount / total;
+
+    a.colors.push(...b.colors);
+    a.rgb = [
+      a.rgb[0] * wa + b.rgb[0] * wb,
+      a.rgb[1] * wa + b.rgb[1] * wb,
+      a.rgb[2] * wa + b.rgb[2] * wb,
+    ];
+    a.totalCount = total;
+    clusters.splice(mj, 1);
+  }
+
+  return clusters.map((cl, i) => {
+    // Representative = most-used colour in the cluster
+    const sorted = [...cl.colors].sort((a, b) => b.count - a.count);
+    return {
+      name: `Layer ${i + 1}`,
+      representativeColor: sorted[0].color,
+      inputColors: cl.colors.map((c) => c.color),
+    };
+  });
+}
+
+/** Trivial grouping for ≤1 colour. */
+function singleGrouping(uniqueColors: string[]): ColorGroup[] {
+  return uniqueColors
+    .filter((c) => c !== "none")
+    .map((c, i) => ({
+      name: `Layer ${i + 1}`,
+      representativeColor: c,
+      inputColors: [c],
+    }));
 }
 
 /* ------------------------------------------------------------------ */
@@ -247,9 +362,10 @@ function buildSVG(
     const compoundD = groupElements.map((el) => el.d).join(" ");
     const layerComment = `  <!-- ${group.name} (${groupElements.length} paths) -->`;
 
-    // Always output filled paths — cutting machines cut around fill outlines
+    // Always output filled paths with evenodd rule — this ensures inner
+    // contours (letter holes, banner interiors) cut as holes, not solid fills.
     paths.push(
-      `${layerComment}\n  <path d="${compoundD}" fill="${color}"/>`
+      `${layerComment}\n  <path d="${compoundD}" fill="${color}" fill-rule="evenodd"/>`
     );
   }
 
@@ -288,35 +404,50 @@ export async function consolidateSVG(
 
   const uniqueColors = [...elementsByColor.keys()];
 
-  // 5. Ask AI for colour grouping (or fall back)
+  // 5. Determine target layer count and group colours
+  const visibleColors = uniqueColors.filter((c) => c !== "none");
+  const maxGroups = targetGroupCount(visibleColors.length);
   let colorGroups: ColorGroup[];
 
-  if (uniqueColors.length <= 1) {
-    // Single colour — no grouping needed
-    colorGroups = fallbackGrouping(uniqueColors);
+  if (visibleColors.length <= 1) {
+    colorGroups = singleGrouping(uniqueColors);
   } else {
-    // Build colour stats for the AI
-    const colorStats = uniqueColors.map((c) => ({
+    // Build colour stats
+    const colorStats = visibleColors.map((c) => ({
       color: c,
       count: elementsByColor.get(c)?.length ?? 0,
     }));
 
     try {
-      colorGroups = await groupColorsForCutting(colorStats);
+      colorGroups = await groupColorsForCutting(colorStats, maxGroups);
 
       // Validate: every input colour must appear in exactly one group
       const covered = new Set(colorGroups.flatMap((g) => g.inputColors));
-      for (const c of uniqueColors) {
+      for (const c of visibleColors) {
         if (!covered.has(c)) {
-          // AI missed a colour — add it to the closest group or its own
-          const smallest = colorGroups.reduce((a, b) =>
-            a.inputColors.length < b.inputColors.length ? a : b
-          );
-          smallest.inputColors.push(c);
+          // AI missed a colour — add to nearest group by colour distance
+          const rgb = hexToRgb(c);
+          let bestIdx = 0;
+          let bestDist = Infinity;
+          for (let i = 0; i < colorGroups.length; i++) {
+            const gRgb = hexToRgb(colorGroups[i].representativeColor);
+            const d = colorDist(rgb, gRgb);
+            if (d < bestDist) {
+              bestDist = d;
+              bestIdx = i;
+            }
+          }
+          colorGroups[bestIdx].inputColors.push(c);
         }
       }
+
+      // If AI returned too many groups, fall back to clustering
+      if (colorGroups.length > maxGroups + 2) {
+        colorGroups = clusterColors(colorStats, maxGroups);
+      }
     } catch {
-      colorGroups = fallbackGrouping(uniqueColors);
+      // AI unavailable — cluster by colour distance
+      colorGroups = clusterColors(colorStats, maxGroups);
     }
   }
 

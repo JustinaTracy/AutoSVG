@@ -81,7 +81,8 @@ export interface ColorGroup {
 }
 
 export async function groupColorsForCutting(
-  colorStats: Array<{ color: string; count: number }>
+  colorStats: Array<{ color: string; count: number }>,
+  maxGroups: number
 ): Promise<ColorGroup[]> {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -89,30 +90,30 @@ export async function groupColorsForCutting(
     messages: [
       {
         role: "user",
-        content: `You are preparing an SVG for a vinyl cutting machine (Cricut / Silhouette).
+        content: `You are preparing an SVG for a vinyl cutting machine (Cricut / Silhouette). Each layer = one piece of vinyl the user has to cut separately, so FEWER IS BETTER.
 
-The design has these fill/stroke colours (with path counts):
-${JSON.stringify(colorStats)}
+The design has ${colorStats.length} colours. Consolidate them into AT MOST ${maxGroups} groups.
 
-For cutting, each colour layer = one material / colour of vinyl. Consolidate these into a small number of layers by grouping similar shades together.
+Colours (hex, path count):
+${colorStats.map((c) => `${c.color} (${c.count})`).join(", ")}
 
-Return JSON with EXACTLY this shape:
+Return JSON:
 {
   "groups": [
     {
-      "name": "descriptive layer name (e.g. Green Foliage)",
-      "representativeColor": "#hex — the dominant shade for this group",
-      "inputColors": ["#hex1", "#hex2", …]
+      "name": "descriptive layer name",
+      "representativeColor": "#hex",
+      "inputColors": ["#hex1", "#hex2"]
     }
   ]
 }
 
-Rules:
-1. Every colour in the input MUST appear in exactly one group's inputColors.
-2. Aim for roughly 2-8 groups — use your judgement based on how visually distinct the colours are. Similar shades (e.g. multiple greens) should merge.
-3. If a colour is "none", put it in its own group named "Cut Lines" with representativeColor "none".
-4. The representative colour should be the most visually prominent shade in its group.
-5. Name each layer descriptively based on what the colour likely represents.`,
+HARD RULES:
+- Maximum ${maxGroups} groups. Merge aggressively — similar shades MUST be combined.
+- Every input colour MUST appear in exactly one group's inputColors array.
+- Use the inputColors array values EXACTLY as given above (copy the hex strings).
+- Pick the most-used shade as representativeColor.
+- Name layers descriptively (e.g. "Green Foliage", "Warm Browns").`,
       },
     ],
     max_tokens: 600,

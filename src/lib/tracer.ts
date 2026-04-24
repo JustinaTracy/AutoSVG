@@ -75,8 +75,8 @@ export async function traceImage(
 
 /**
  * Clean up potrace output for cutting machines:
+ * - Ensure fill-rule="evenodd" so inner contours cut as holes
  * - Ensure all paths are closed
- * - Remove fill-rule if it causes issues
  * - Add proper SVG namespace
  */
 function cleanTracedSVG(svg: string): string {
@@ -84,6 +84,12 @@ function cleanTracedSVG(svg: string): string {
   if (!svg.includes("xmlns=")) {
     svg = svg.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
   }
+
+  // Ensure evenodd fill-rule on all paths (potrace subpaths rely on it)
+  svg = svg.replace(
+    /<path\b(?![^>]*fill-rule)/gi,
+    '<path fill-rule="evenodd"'
+  );
 
   // Close any open paths
   svg = svg.replace(
