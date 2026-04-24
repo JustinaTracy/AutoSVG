@@ -136,8 +136,14 @@ export default function Home() {
       setStatus("error");
       return;
     }
-    if (f.size > 10 * 1024 * 1024) {
-      setError("File is too large. Maximum size is 10 MB.");
+    const isSvg = f.type === "image/svg+xml";
+    const limit = isSvg ? 10 * 1024 * 1024 : 50 * 1024 * 1024;
+    if (f.size > limit) {
+      setError(
+        isSvg
+          ? "SVG file is too large. Maximum size is 10 MB."
+          : "Image is too large. Maximum size is 50 MB."
+      );
       setStatus("error");
       return;
     }
@@ -293,7 +299,7 @@ export default function Home() {
                   </span>
                 </p>
                 <p className="mt-4 font-body text-xs text-neutral-400">
-                  Accepts PNG, JPEG, SVG — up to 10 MB
+                  Accepts PNG, JPEG, SVG — large images auto-resized
                 </p>
               </div>
 

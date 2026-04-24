@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import { analyzeImageForCutting } from "@/lib/openai";
 import { traceImage } from "@/lib/tracer";
 import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
@@ -9,7 +10,8 @@ import {
   extractInputStats,
 } from "@/lib/svg-validator";
 
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_RASTER_SIZE = 50 * 1024 * 1024; // 50 MB (we'll resize down)
+const MAX_SVG_SIZE = 10 * 1024 * 1024; // 10 MB
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,15 +25,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (file.size > MAX_FILE_SIZE) {
+    const mimeType = file.type;
+    const isRaster =
+      mimeType === "image/png" ||
+      mimeType === "image/jpeg" ||
+      mimeType === "image/jpg";
+
+    // SVGs: hard 10MB limit (text-based, can't resize)
+    // Rasters: accept up to 50MB, auto-resize to fit
+    const sizeLimit = isRaster ? MAX_RASTER_SIZE : MAX_SVG_SIZE;
+    if (file.size > sizeLimit) {
       return NextResponse.json(
-        { success: false, error: "File is too large. Maximum size is 10 MB." },
+        {
+          success: false,
+          error: isRaster
+            ? "Image is too large (over 50 MB)."
+            : "SVG file is too large. Maximum size is 10 MB.",
+        },
         { status: 400 }
       );
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const mimeType = file.type;
+    const rawBuffer = Buffer.from(await file.arrayBuffer());
+
+    // Auto-resize large raster images so they fit within processing limits
+    let buffer: Buffer;
+    if (isRaster && rawBuffer.length > 10 * 1024 * 1024) {
+      buffer = await sharp(rawBuffer)
+        .resize(4096, 4096, { fit: "inside", withoutEnlargement: true })
+        .png()
+        .toBuffer();
+    } else {
+      buffer = rawBuffer;
+    }
 
     // ── SVG upload ────────────────────────────────────────────────
     if (mimeType === "image/svg+xml") {
