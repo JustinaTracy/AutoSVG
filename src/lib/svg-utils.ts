@@ -26,6 +26,16 @@ function countPaths(svg: string): { total: number; closed: number } {
   return { total, closed };
 }
 
+/** Count distinct fill colours (from both style blocks and attributes). */
+function countColors(svg: string): number {
+  const styleBlock = svg.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const fromStyle = [...styleBlock.matchAll(/fill:\s*([^;\s}]+)/g)].map(
+    (m) => m[1]
+  );
+  const fromAttr = [...svg.matchAll(/fill="([^"]+)"/g)].map((m) => m[1]);
+  return new Set([...fromStyle, ...fromAttr].filter((f) => f !== "none")).size;
+}
+
 /* ------------------------------------------------------------------ */
 /*  SVG checker / fixer                                                */
 /* ------------------------------------------------------------------ */
@@ -170,7 +180,7 @@ export function optimizeSVGConservative(svgContent: string): string {
         name: "preset-default" as const,
         params: {
           overrides: {
-            // NEVER touch paths or structure
+            // NEVER touch paths, structure, or styles
             removeViewBox: false,
             convertPathData: false,
             mergePaths: false,
@@ -179,6 +189,11 @@ export function optimizeSVGConservative(svgContent: string): string {
             convertShapeToPath: false,
             moveElemsAttrsToGroup: false,
             moveGroupAttrsToElems: false,
+            // Preserve CSS classes & colours exactly
+            mergeStyles: false,
+            inlineStyles: false,
+            minifyStyles: false,
+            convertColors: false,
           },
         },
       },
@@ -189,12 +204,17 @@ export function optimizeSVGConservative(svgContent: string): string {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = optimize(svgContent, config as any);
 
-    // Safety: verify we didn't lose or break any paths
-    const before = countPaths(svgContent);
-    const after = countPaths(result.data);
+    // Safety: verify we didn't lose or break paths OR colours
+    const beforePaths = countPaths(svgContent);
+    const afterPaths = countPaths(result.data);
+    const beforeColors = countColors(svgContent);
+    const afterColors = countColors(result.data);
 
-    if (after.total < before.total || after.closed < before.closed) {
-      // Optimization degraded the SVG — return the original
+    if (
+      afterPaths.total < beforePaths.total ||
+      afterPaths.closed < beforePaths.closed ||
+      afterColors < beforeColors
+    ) {
       return svgContent;
     }
 

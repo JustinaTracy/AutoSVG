@@ -55,19 +55,34 @@ export async function POST(request: NextRequest) {
       // Conservative optimise — preserve user's path data
       const optimized = optimizeSVGConservative(fixedSVG);
 
-      // Merge AI issues with structural issues (avoid dupes)
+      // Our structural checks are ground truth.  AI issues that
+      // contradict what we actually verified get filtered out.
       const structuralTypes = new Set(issues.map((i) => i.type));
-      const mergedIssues = [
-        ...issues,
-        ...(aiAnalysis.issues || [])
-          .filter(
-            (i: { type: string }) => !structuralTypes.has(i.type)
-          )
-          .map((i: { type: string; description: string; severity: string }) => ({
-            ...i,
-            fixed: false,
-          })),
-      ];
+
+      // Map AI issue type names to the structural facts we already checked
+      const structurallyVerified = new Set([
+        "open-paths",   "hasOpenPaths",   "openPaths",
+        "text-elements","hasTextElements","textElements",
+        "gradients",    "hasGradients",
+        "filters",
+        "embedded-images",
+      ]);
+
+      // Only keep AI issues that are NOT about things we structurally verified
+      const aiOnlyIssues = (aiAnalysis.issues || [])
+        .filter((i: { type: string }) => {
+          // Skip if we already have it
+          if (structuralTypes.has(i.type)) return false;
+          // Skip if AI claims something our parser proved absent
+          if (structurallyVerified.has(i.type) && !structuralTypes.has(i.type)) return false;
+          return true;
+        })
+        .map((i: { type: string; description: string; severity: string }) => ({
+          ...i,
+          fixed: false,
+        }));
+
+      const mergedIssues = [...issues, ...aiOnlyIssues];
 
       return NextResponse.json({
         success: true,
