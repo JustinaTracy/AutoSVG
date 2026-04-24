@@ -1,26 +1,89 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@font-face {
+  font-family: 'EB Garamond';
+  src: url('/fonts/EBGaramond-VariableFont_wght.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Figtree';
+  src: url('/fonts/Figtree-VariableFont_wght.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Primary — Plum Wine */
+  --color-plum-wine-50: #F4EFF3;
+  --color-plum-wine-100: #EBDFE9;
+  --color-plum-wine-200: #DCC5D6;
+  --color-plum-wine-300: #C5A1BC;
+  --color-plum-wine-400: #B183A4;
+  --color-plum-wine-500: #996688;
+  --color-plum-wine-600: #825471;
+  --color-plum-wine-700: #6D475E;
+  --color-plum-wine-800: #4A3241;
+  --color-plum-wine-900: #36212E;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Sage Gray */
+  --color-sage-gray-50: #EBEDEC;
+  --color-sage-gray-100: #D6DCD8;
+  --color-sage-gray-200: #BBC4BE;
+  --color-sage-gray-300: #8D9B92;
+  --color-sage-gray-400: #6C7B72;
+  --color-sage-gray-500: #56635B;
+
+  /* Dusty Rose */
+  --color-dusty-rose-50: #F9EAEB;
+  --color-dusty-rose-100: #F3D8DC;
+  --color-dusty-rose-200: #E8B4BC;
+  --color-dusty-rose-300: #DC909D;
+  --color-dusty-rose-400: #CC677C;
+
+  /* Backgrounds */
+  --color-pearl: #FAFAF9;
+  --color-alabaster: #FAF7F2;
+
+  /* Semantic */
+  --color-sunset-red-50: #FFE1E2;
+  --color-sunset-red-500: #E51D23;
+  --color-sunset-red-600: #C11419;
+
+  --color-sage-success-50: #EBEDEC;
+  --color-sage-success-500: #56635B;
+
+  --color-lemon-50: #FCFFC2;
+  --color-lemon-500: #CCA502;
+
+  /* Fonts */
+  --font-heading: 'EB Garamond', Georgia, 'Times New Roman', serif;
+  --font-body: 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: #FAFAF9;
+  color: #36212E;
+  font-family: 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 2s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
 }
