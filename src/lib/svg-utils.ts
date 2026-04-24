@@ -12,6 +12,24 @@ export interface CheckResult {
   issues: SVGIssue[];
 }
 
+/* ------------------------------------------------------------------ */
+/*  Path helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Count how many <path> d-attributes are properly closed with Z/z. */
+function countPaths(svg: string): { total: number; closed: number } {
+  const dAttrs = [...svg.matchAll(/\bd="([^"]*)"/g)].map((m) => m[1].trim());
+  const total = dAttrs.filter((d) => /[MLCSQTAmlcsqta]/.test(d)).length;
+  const closed = dAttrs.filter(
+    (d) => /[MLCSQTAmlcsqta]/.test(d) && /[zZ]\s*$/.test(d)
+  ).length;
+  return { total, closed };
+}
+
+/* ------------------------------------------------------------------ */
+/*  SVG checker / fixer                                                */
+/* ------------------------------------------------------------------ */
+
 /**
  * Check an SVG for cutting-machine compatibility and auto-fix what we can.
  */
@@ -54,12 +72,8 @@ export function checkAndFixSVG(svgContent: string): CheckResult {
     });
     svg = svg.replace(/<linearGradient[^]*?<\/linearGradient>/gi, "");
     svg = svg.replace(/<radialGradient[^]*?<\/radialGradient>/gi, "");
-    // Replace url(#gradient) fills with a solid color
     svg = svg.replace(/fill\s*=\s*"url\(#[^)]*\)"/gi, 'fill="#000000"');
-    svg = svg.replace(
-      /fill\s*:\s*url\(#[^)]*\)/gi,
-      "fill: #000000"
-    );
+    svg = svg.replace(/fill\s*:\s*url\(#[^)]*\)/gi, "fill: #000000");
   }
 
   // --- Filters / effects ---
@@ -88,63 +102,47 @@ export function checkAndFixSVG(svgContent: string): CheckResult {
   }
 
   // --- Open paths ---
-  const pathRegex = /\bd="([^"]*)"/g;
-  let match: RegExpExecArray | null;
-  let hasOpenPaths = false;
+  const before = countPaths(svg);
 
-  while ((match = pathRegex.exec(svg)) !== null) {
-    const d = match[1].trim();
-    if (d && !/[zZ]\s*$/.test(d) && /[MLCSQTAmlcsqta]/.test(d)) {
-      hasOpenPaths = true;
-      break;
-    }
-  }
-
-  if (hasOpenPaths) {
+  if (before.total > 0 && before.closed < before.total) {
     issues.push({
       type: "open-paths",
-      description:
-        "Some paths are not closed. They have been auto-closed for clean cutting.",
+      description: `${before.total - before.closed} of ${before.total} paths are not closed. They have been auto-closed for clean cutting.`,
       severity: "medium",
       fixed: true,
     });
     svg = svg.replace(
       /(\bd=")((?:(?!")[^])*)(")/g,
-      (_m, before, pathData, after) => {
+      (_m, pre, pathData, post) => {
         const trimmed = pathData.trim();
         if (
           trimmed &&
           !/[zZ]\s*$/.test(trimmed) &&
           /[MLCSQTAmlcsqta]/.test(trimmed)
         ) {
-          return `${before}${trimmed} Z${after}`;
+          return `${pre}${trimmed} Z${post}`;
         }
-        return `${before}${trimmed}${after}`;
+        return `${pre}${trimmed}${post}`;
       }
     );
   }
 
-  // --- Stroke-only elements (no fill) — might produce cut lines not shapes ---
+  // --- Stroke-only elements (no fill) ---
   if (
-    /stroke\s*[:=]\s*["']?(?!none|transparent).*fill\s*[:=]\s*["']?none/i.test(
-      svg
-    ) ||
-    /fill\s*[:=]\s*["']?none.*stroke\s*[:=]\s*["']?(?!none|transparent)/i.test(
-      svg
-    )
+    /stroke\s*[:=]\s*["']?(?!none|transparent)[\w#].*fill\s*[:=]\s*["']?none/i.test(svg) ||
+    /fill\s*[:=]\s*["']?none.*stroke\s*[:=]\s*["']?(?!none|transparent)[\w#]/i.test(svg)
   ) {
     issues.push({
       type: "stroke-only",
       description:
-        "Some elements use strokes without fills. Cutting machines follow fill outlines — stroked shapes may cut as outlines only.",
+        "Elements use strokes without fills. Cutting machines will follow stroke paths as cut/score lines.",
       severity: "low",
       fixed: false,
     });
   }
 
   // --- Very thin strokes ---
-  const thinStroke = /stroke-width\s*[:=]\s*["']?\s*(0\.0\d|0\.[01]\d)/i;
-  if (thinStroke.test(svg)) {
+  if (/stroke-width\s*[:=]\s*["']?\s*(0\.0\d|0\.[01]\d)/i.test(svg)) {
     issues.push({
       type: "thin-strokes",
       description:
@@ -157,8 +155,58 @@ export function checkAndFixSVG(svgContent: string): CheckResult {
   return { svg, issues };
 }
 
+/* ------------------------------------------------------------------ */
+/*  SVGO wrappers                                                      */
+/* ------------------------------------------------------------------ */
+
 /**
- * Optimise SVG for cutting machines using SVGO.
+ * Conservative optimise — metadata cleanup only, never touches paths.
+ * Use for uploaded SVGs where the user's path data must be preserved.
+ */
+export function optimizeSVGConservative(svgContent: string): string {
+  const config = {
+    plugins: [
+      {
+        name: "preset-default" as const,
+        params: {
+          overrides: {
+            // NEVER touch paths or structure
+            removeViewBox: false,
+            convertPathData: false,
+            mergePaths: false,
+            collapseGroups: false,
+            convertTransform: false,
+            convertShapeToPath: false,
+            moveElemsAttrsToGroup: false,
+            moveGroupAttrsToElems: false,
+          },
+        },
+      },
+    ],
+  };
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = optimize(svgContent, config as any);
+
+    // Safety: verify we didn't lose or break any paths
+    const before = countPaths(svgContent);
+    const after = countPaths(result.data);
+
+    if (after.total < before.total || after.closed < before.closed) {
+      // Optimization degraded the SVG — return the original
+      return svgContent;
+    }
+
+    return result.data;
+  } catch {
+    return svgContent;
+  }
+}
+
+/**
+ * Aggressive optimise — for SVGs we generated (traced output).
+ * OK to restructure paths since we own them.
  */
 export function optimizeSVG(svgContent: string): string {
   const config = {
@@ -171,14 +219,21 @@ export function optimizeSVG(svgContent: string): string {
           },
         },
       },
-      "convertPathData" as const,
-      "sortAttrs" as const,
     ],
   };
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = optimize(svgContent, config as any);
+
+    // Even for traced SVGs, don't lose closed paths
+    const before = countPaths(svgContent);
+    const after = countPaths(result.data);
+
+    if (after.closed < before.closed) {
+      return svgContent;
+    }
+
     return result.data;
   } catch {
     return svgContent;

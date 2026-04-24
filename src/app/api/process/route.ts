@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { analyzeImageForCutting, analyzeSVGForCutting } from "@/lib/openai";
 import { traceImage } from "@/lib/tracer";
-import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
+import { checkAndFixSVG, optimizeSVG, optimizeSVGConservative } from "@/lib/svg-utils";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
@@ -52,8 +52,8 @@ export async function POST(request: NextRequest) {
         };
       }
 
-      // Optimise
-      const optimized = optimizeSVG(fixedSVG);
+      // Conservative optimise — preserve user's path data
+      const optimized = optimizeSVGConservative(fixedSVG);
 
       // Merge AI issues with structural issues (avoid dupes)
       const structuralTypes = new Set(issues.map((i) => i.type));
