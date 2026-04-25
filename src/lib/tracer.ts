@@ -298,8 +298,6 @@ export async function traceImage(
         // (eyes, highlights) are included as solid, not cut out.
         if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
         if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
-        const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
-        if (dAttr.length < 50) continue;
         silPaths.push(p);
       }
       if (silPaths.length > 0) {
