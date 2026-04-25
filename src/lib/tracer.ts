@@ -96,8 +96,11 @@ export async function traceImage(
   const designColors = Math.max(1, Math.min(options.recommendedColors, 6));
 
   // ── 1. Preprocess ──────────────────────────────────────────────
+  // Lower resolution = fewer contour points = smoother, smaller paths.
+  // 1200px is enough detail for cutting machines while keeping
+  // path data manageable (~50-200 nodes per layer vs 12,000+).
   const preprocessed = await sharp(imageBuffer)
-    .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
+    .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
     .flatten({ background: bgColor })
     .toBuffer();
 
@@ -161,10 +164,13 @@ export async function traceImage(
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`;
   }
 
-  // ── 5b. Cluster only if there are too many distinct colours ─────
-  // Keep up to 10 layers. With 24-palette quantisation we may get
-  // many anti-aliasing shades — cluster those down while keeping
-  // the real design colours separate.
+  // ── 5b. Merge near-duplicate colours + cap at max layers ────────
+  // First: merge any colours closer than MIN_COLOR_DIST — these are
+  // anti-aliasing shades that should be the same layer.
+  const MIN_COLOR_DIST = 35;
+  foreground = mergeNearDuplicates(foreground, counts, MIN_COLOR_DIST);
+
+  // Then: cluster down to max if still too many
   const MAX_LAYERS = 10;
   if (foreground.length > MAX_LAYERS) {
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
@@ -199,13 +205,11 @@ export async function traceImage(
         threshold: 128,
         color: color,
         background: "transparent",
-        // turdSize: suppress contours smaller than this many pixels.
-        // Higher = fewer tiny debris fragments.
         turdSize: 100,
         // optTolerance: curve-fitting tolerance. Higher = smoother
-        // paths with fewer nodes (less jagged). 0.4 is potrace default,
-        // 1.2 gives good smooth curves for cutting machines.
-        optTolerance: 1.2,
+        // paths with fewer nodes. Default 0.4 is pixel-level jagged.
+        // 2.0 gives clean smooth curves ideal for cutting machines.
+        optTolerance: 2.0,
       });
 
       // Pull <path> elements out of potrace's SVG
@@ -269,6 +273,39 @@ export async function traceImage(
 /* ------------------------------------------------------------------ */
 /*  Foreground colour clustering                                       */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Merge any pair of colours closer than `minDist` in RGB space.
+ * Keeps the one with more pixels as the representative.
+ */
+function mergeNearDuplicates(
+  colors: string[],
+  pixelCounts: Map<string, number>,
+  minDist: number
+): string[] {
+  const result = [...colors];
+
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        if (colorDistance(hexToRgb(result[i]), hexToRgb(result[j])) < minDist) {
+          // Keep the one with more pixels
+          const keepI =
+            (pixelCounts.get(result[i]) ?? 0) >=
+            (pixelCounts.get(result[j]) ?? 0);
+          result.splice(keepI ? j : i, 1);
+          merged = true;
+          break;
+        }
+      }
+      if (merged) break;
+    }
+  }
+
+  return result;
+}
 
 /**
  * Merge the closest foreground colours until we reach `target` count.
