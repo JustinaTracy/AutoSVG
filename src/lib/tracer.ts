@@ -119,13 +119,18 @@ export async function traceImage(
   const ch = 4;
   const totalPixels = width * height;
 
-  // Build alpha mask: true = opaque (foreground), false = transparent (bg)
+  // Build alpha mask and verify there ARE actually transparent pixels.
+  // Many PNGs have an alpha channel but are fully opaque — treat those
+  // as non-alpha (use edge-based background detection instead).
   const alphaMask = new Uint8Array(totalPixels);
-  if (hasAlpha) {
-    for (let i = 0; i < rawRGBA.length; i += ch) {
-      alphaMask[i / ch] = rawRGBA[i + 3] > 128 ? 1 : 0;
-    }
+  let transparentPixelCount = 0;
+  for (let i = 0; i < rawRGBA.length; i += ch) {
+    const isTransparent = rawRGBA[i + 3] <= 128;
+    alphaMask[i / ch] = isTransparent ? 0 : 1;
+    if (isTransparent) transparentPixelCount++;
   }
+  // Only use alpha path if at least 1% of pixels are actually transparent
+  const reallyHasAlpha = hasAlpha && transparentPixelCount > totalPixels * 0.01;
 
   // ── 3. Flatten and quantise ────────────────────────────────────
   const preprocessed = await resized
@@ -145,7 +150,7 @@ export async function traceImage(
   // ── 4. Find unique colours (opaque pixels only for alpha images) ─
   const counts = new Map<string, number>();
   for (let i = 0; i < data.length; i += ch) {
-    if (hasAlpha && !alphaMask[i / ch]) continue; // skip transparent pixels
+    if (reallyHasAlpha && !alphaMask[i / ch]) continue; // skip transparent pixels
     const hex = rgbToHex(data[i], data[i + 1], data[i + 2]);
     counts.set(hex, (counts.get(hex) || 0) + 1);
   }
@@ -157,13 +162,13 @@ export async function traceImage(
   // (JPEGs, PNGs without transparency).
   const BG_DISTANCE = 60;
   const MIN_SHARE = 0.004;
-  const opaqueCount = hasAlpha
+  const opaqueCount = reallyHasAlpha
     ? alphaMask.reduce((s, v) => s + v, 0)
     : totalPixels;
 
   let foreground: string[];
 
-  if (hasAlpha) {
+  if (reallyHasAlpha) {
     // Alpha image: every colour in `counts` is already foreground
     // (we skipped transparent pixels above). Just filter noise.
     const alphaEntries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
@@ -234,7 +239,7 @@ export async function traceImage(
   // Hoist silMask so it's available to both silhouette and simplified traces
   const silMask = Buffer.alloc(width * height, 255); // 255 = background
   if (foreground.length > 1) {
-    if (hasAlpha) {
+    if (reallyHasAlpha) {
       // Alpha mask is the ground truth — opaque = foreground
       for (let pi = 0; pi < totalPixels; pi++) {
         silMask[pi] = alphaMask[pi] ? 0 : 255;
@@ -258,18 +263,9 @@ export async function traceImage(
     }
     // Blur + threshold for clean edges, then use for BOTH silhouette
     // trace and as the boundary reference for simplified mode
-    // Stronger blur for non-alpha (JPEG artifacts, quantization noise
-    // create thin horizontal bands that look like scan lines).
-    // Alpha images need less blur since the mask is clean.
-    const silBlur = hasAlpha ? 1.5 : 5;
-    const silCleanBuf = await sharp(silMask, { raw: { width, height, channels: 1 } })
-      .blur(silBlur)
-      .threshold(128)
-      .raw()
-      .toBuffer();
-    // Update silMask in place with the cleaned version
-    silCleanBuf.copy(silMask);
-
+    // No blur — the silhouette should be a clean, accurate trace of
+    // exactly what's in the mask. Any smoothing happens in potrace
+    // via optTolerance, not by blurring the mask.
     const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
       .png()
       .toBuffer();
@@ -440,7 +436,7 @@ export async function traceImage(
   // ── 7. Per-colour mask → trace ─────────────────────────────────
   // For alpha images the bg colour doesn't matter (transparent pixels
   // were already excluded from counts). Use white as a placeholder.
-  const bgRgbForOwnership: [number, number, number] = hasAlpha
+  const bgRgbForOwnership: [number, number, number] = reallyHasAlpha
     ? [255, 255, 255]
     : hexToRgb(
         [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "#ffffff"
@@ -462,7 +458,7 @@ export async function traceImage(
     for (let i = 0; i < data.length; i += ch) {
       const pi = i / ch;
       // For alpha images, skip transparent pixels
-      if (hasAlpha && !alphaMask[pi]) { mask[pi] = 255; continue; }
+      if (reallyHasAlpha && !alphaMask[pi]) { mask[pi] = 255; continue; }
       const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
       mask[pi] = ownedHexes.includes(px) ? 0 : 255;
     }
