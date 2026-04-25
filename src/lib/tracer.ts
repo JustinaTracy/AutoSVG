@@ -290,7 +290,10 @@ export async function traceImage(
 
   // ── 5b. Merge near-duplicate colours + absorb satellites ────────
   // 1) Merge colours closer than MIN_COLOR_DIST
-  const MIN_COLOR_DIST = 35;
+  // 80 catches "same colour family" like two shades of yellow on a
+  // lemon (distance ~78) while keeping genuinely different hues
+  // separate (red vs orange is ~128, blue vs purple is ~130+).
+  const MIN_COLOR_DIST = 80;
   foreground = mergeNearDuplicates(foreground, counts, MIN_COLOR_DIST);
 
   // 2) Absorb "satellite" colours: if a colour has < 10% the pixels
