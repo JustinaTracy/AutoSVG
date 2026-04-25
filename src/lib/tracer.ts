@@ -194,9 +194,10 @@ export async function traceImage(
       const silPaths: string[] = [];
       for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
         let p = m[0];
-        // Use nonzero fill — we want a completely solid shape, NO holes
-        p = p.replace(/fill-rule="[^"]*"/g, "");
-        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="nonzero"');
+        // Use evenodd — preserves real structural holes (donut shapes)
+        // while the tight SIL_BG_DIST ensures light interior features
+        // (eyes, highlights) are included as solid, not cut out.
+        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
         if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
         const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
         if (dAttr.length < 50) continue;
