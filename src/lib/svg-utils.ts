@@ -71,19 +71,66 @@ export function checkAndFixSVG(svgContent: string): CheckResult {
     svg = svg.replace(/<image[^]*?<\/image>/gi, "");
   }
 
-  // --- Gradients → replace with solid fills ---
+  // --- Gradients → replace with colour-matched solid fills ---
   if (/<(linearGradient|radialGradient)[\s>]/i.test(svg)) {
     issues.push({
       type: "gradients",
       description:
-        "Contains gradients which cutting machines cannot reproduce. They have been removed.",
+        "Contains gradients which cutting machines cannot reproduce. Replaced with the average gradient colour.",
       severity: "medium",
       fixed: true,
     });
+
+    // Build a map of gradient id → average stop colour
+    const gradientColors = new Map<string, string>();
+    const gradRe =
+      /<(linearGradient|radialGradient)\b[^>]*id="([^"]*)"[^>]*>([\s\S]*?)<\/\1>/gi;
+    let gm: RegExpExecArray | null;
+    while ((gm = gradRe.exec(svg)) !== null) {
+      const id = gm[2];
+      const body = gm[3];
+      const stops = [
+        ...body.matchAll(/stop-color="([^"]*)"/gi),
+      ].map((s) => s[1]);
+      // Also check stop-color in style attribute
+      const styleStops = [
+        ...body.matchAll(/style="[^"]*stop-color:\s*([^;"]+)/gi),
+      ].map((s) => s[1]);
+      const allStops = [...stops, ...styleStops].filter(Boolean);
+
+      if (allStops.length > 0) {
+        // Average the stop colours
+        let rSum = 0, gSum = 0, bSum = 0;
+        for (const hex of allStops) {
+          const h = hex.replace("#", "");
+          const r = parseInt(h.substring(0, 2), 16) || 0;
+          const g = parseInt(h.substring(2, 4), 16) || 0;
+          const b = parseInt(h.substring(4, 6), 16) || 0;
+          rSum += r; gSum += g; bSum += b;
+        }
+        const n = allStops.length;
+        const avg =
+          "#" +
+          [Math.round(rSum / n), Math.round(gSum / n), Math.round(bSum / n)]
+            .map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0"))
+            .join("");
+        gradientColors.set(id, avg);
+      }
+    }
+
+    // Remove gradient definitions
     svg = svg.replace(/<linearGradient[^]*?<\/linearGradient>/gi, "");
     svg = svg.replace(/<radialGradient[^]*?<\/radialGradient>/gi, "");
-    svg = svg.replace(/fill\s*=\s*"url\(#[^)]*\)"/gi, 'fill="#000000"');
-    svg = svg.replace(/fill\s*:\s*url\(#[^)]*\)/gi, "fill: #000000");
+
+    // Replace url(#id) references with the matched colour
+    svg = svg.replace(
+      /fill\s*=\s*"url\(#([^)]*)\)"/gi,
+      (_m, id) => `fill="${gradientColors.get(id) ?? "#808080"}"`
+    );
+    svg = svg.replace(
+      /fill\s*:\s*url\(#([^)]*)\)/gi,
+      (_m, id) => `fill: ${gradientColors.get(id) ?? "#808080"}`
+    );
   }
 
   // --- Filters / effects ---
