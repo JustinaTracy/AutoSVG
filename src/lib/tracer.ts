@@ -15,6 +15,7 @@
 
 import sharp from "sharp";
 import potrace from "potrace";
+import { analyzeLayerStrategy, type LayerStrategy } from "./openai";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -176,15 +177,37 @@ export async function traceImage(
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
-  // ── 6. Per-colour mask → trace ─────────────────────────────────
-  // Build a map of which quantized hex each foreground colour "owns".
-  // After clustering, one representative may match multiple quantized colours.
+  // ── 6. AI layer strategy ────────────────────────────────────────
+  // Ask GPT-4o to look at the image and decide per-colour: is this a
+  // solid fill layer (holes filled) or a detail layer (holes preserved)?
+  let strategies: Map<string, LayerStrategy> = new Map();
+  try {
+    const thumbBuf = await sharp(preprocessed)
+      .resize(600, 600, { fit: "inside", withoutEnlargement: true })
+      .jpeg({ quality: 60 })
+      .toBuffer();
+    const thumbB64 = thumbBuf.toString("base64");
+    const aiLayers = await analyzeLayerStrategy(
+      thumbB64,
+      "image/jpeg",
+      foreground
+    );
+    for (const layer of aiLayers) {
+      strategies.set(layer.color, layer);
+    }
+  } catch {
+    // AI unavailable — default everything to "detail" (safe, no holes filled)
+  }
+
+  // ── 7. Per-colour mask → trace ─────────────────────────────────
   const colorOwnership = buildColorOwnership(foreground, counts, dominantRgb, BG_DISTANCE);
 
   const pathElements: string[] = [];
 
   for (const color of foreground) {
     const ownedHexes = colorOwnership.get(color) ?? [color];
+    const strategy = strategies.get(color);
+    const prevCount = pathElements.length;
 
     // Binary mask: any pixel matching one of the owned colours → black
     const mask = Buffer.alloc(width * height);
@@ -194,20 +217,13 @@ export async function traceImage(
       mask[pi] = ownedHexes.includes(px) ? 0 : 255;
     }
 
-    // Morphological close: blur → re-threshold.
-    // Fills interior holes (text cutouts inside coloured circles)
-    // so each colour layer becomes a SOLID shape for vinyl layering.
-    // The text colour goes ON TOP as a separate layer.
-    //
-    // Sigma 6 at 1200px fills ~12-18px gaps (text-stroke-width holes)
-    // while preserving ~30px+ features (letter counters inside B, D).
-    const maskPng = await sharp(mask, {
-      raw: { width, height, channels: 1 },
-    })
-      .blur(6)
-      .threshold(128)
-      .png()
-      .toBuffer();
+    // AI decides: "fill" layers get morphological close (solid shapes
+    // for easy weeding), "detail" layers stay clean (letter holes preserved).
+    const sharpMask = sharp(mask, { raw: { width, height, channels: 1 } });
+    const maskPng =
+      strategy?.fillHoles
+        ? await sharpMask.blur(6).threshold(128).png().toBuffer()
+        : await sharpMask.png().toBuffer();
 
     try {
       const traced = await traceAsync(maskPng, {
@@ -253,25 +269,33 @@ export async function traceImage(
 
         pathElements.push(p);
       }
+
+      // Add layer comment for readability
+      if (pathElements.length > prevCount) {
+        const desc = strategy?.description ?? color;
+        const role = strategy?.role ?? "unknown";
+        const comment = `<!-- Layer: ${desc} (${role}${strategy?.fillHoles ? ", solid" : ""}) -->`;
+        pathElements.splice(prevCount, 0, comment);
+      }
     } catch {
       // Skip colour if tracing fails
     }
   }
 
-  // ── 7. Remove debris layers ──────────────────────────────────────
-  // If a traced layer has very little path data compared to the
-  // largest layer, it's likely anti-aliasing debris — drop it.
+  // ── 8. Remove debris layers ──────────────────────────────────────
   if (pathElements.length > 1) {
     const pathSizes = pathElements.map((p) => {
+      if (p.startsWith("<!--")) return Infinity; // keep comments
       const d = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
       return d.length;
     });
-    const maxSize = Math.max(...pathSizes);
-    const MIN_RATIO = 0.02; // must be at least 2% of the largest layer
+    const realSizes = pathSizes.filter((s) => s !== Infinity);
+    const maxSize = Math.max(...realSizes, 1);
+    const MIN_RATIO = 0.02;
 
-    const cleaned = pathElements.filter((_, i) => {
-      return pathSizes[i] >= maxSize * MIN_RATIO;
-    });
+    const cleaned = pathElements.filter(
+      (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
+    );
 
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`;
   }

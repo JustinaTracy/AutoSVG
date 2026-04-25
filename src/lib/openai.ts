@@ -124,6 +124,83 @@ HARD RULES:
 }
 
 /* ------------------------------------------------------------------ */
+/*  Per-layer vinyl strategy                                           */
+/* ------------------------------------------------------------------ */
+
+export interface LayerStrategy {
+  color: string;
+  role: "fill" | "detail";
+  fillHoles: boolean;
+  order: number;
+  description: string;
+}
+
+/**
+ * Ask GPT-4o to look at the image and decide, for each detected colour,
+ * how it should be handled for vinyl cutting:
+ *
+ *  - "fill" layers are solid background shapes (circles, banners).
+ *    Holes from overlapping text/detail should be FILLED so the vinyl
+ *    is one easy-to-weed piece. These go down first.
+ *
+ *  - "detail" layers are text, outlines, fine features.
+ *    Holes (letter counters inside B, D, O, etc.) must be PRESERVED.
+ *    These are layered on top.
+ */
+export async function analyzeLayerStrategy(
+  imageBase64: string,
+  mimeType: string,
+  colors: string[]
+): Promise<LayerStrategy[]> {
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:${mimeType};base64,${imageBase64}`,
+              detail: "low",
+            },
+          },
+          {
+            type: "text",
+            text: `You are a vinyl cutting expert. I'm converting this image to layered vinyl cut files.
+
+I detected these colours in the design: ${JSON.stringify(colors)}
+
+For vinyl cutting, layers STACK on top of each other on the surface. You cut each colour separately and apply them in order.
+
+For EACH colour, decide:
+
+1. **role**: "fill" or "detail"
+   - "fill" = large solid shapes (coloured circles, banners, backgrounds). These should be CUT AS SOLID SHAPES with no holes from overlapping text. The text vinyl goes ON TOP.
+   - "detail" = text, lettering, outlines, thin features. These need their internal holes PRESERVED (like the inside of letters B, D, O, P, R, etc.).
+
+2. **fillHoles**: true if this colour's shapes should be solid (fill small interior gaps from overlapping layers). false if holes/counters must be kept.
+
+3. **order**: stacking order (1 = applied to surface first / bottom, higher = on top). Fill layers go first, detail layers go on top.
+
+4. **description**: brief label like "Red flower centers", "Dark brown text and outlines"
+
+Return JSON: { "layers": [ { "color": "#hex", "role": "fill"|"detail", "fillHoles": true|false, "order": 1, "description": "..." } ] }
+
+Think about what makes this EASIEST for someone to cut and weed vinyl. Solid shapes are easier to weed than complex shapes with lots of interior cutouts.`,
+          },
+        ],
+      },
+    ],
+    max_tokens: 600,
+  });
+
+  const data = JSON.parse(response.choices[0].message.content || "{}");
+  return data.layers ?? [];
+}
+
+/* ------------------------------------------------------------------ */
 /*  SVG cuttability analysis                                           */
 /* ------------------------------------------------------------------ */
 
