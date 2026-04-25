@@ -163,7 +163,7 @@ export default function Home() {
     let uploadFile: File | Blob = f;
     if (!isSvg && f.size > 3 * 1024 * 1024) {
       try {
-        uploadFile = await resizeImageClientSide(f, 3000, 0.92);
+        uploadFile = await resizeImageClientSide(f);
       } catch {
         // If resize fails, try uploading the original
       }
@@ -643,45 +643,73 @@ export default function Home() {
 /* ------------------------------------------------------------------ */
 
 /**
- * Resize a raster image in the browser using Canvas before uploading.
- * Keeps the aspect ratio and converts to PNG under the target size.
+ * Resize a raster image in the browser before uploading.
+ * Uses JPEG for photo-like images (much smaller than PNG for complex art).
+ * Progressively shrinks until under the Vercel 4.5 MB body limit.
  */
-function resizeImageClientSide(
-  file: File,
-  maxDim: number,
-  quality: number
-): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
+async function resizeImageClientSide(file: File): Promise<Blob> {
+  const MAX_UPLOAD_BYTES = 4 * 1024 * 1024; // 4 MB (under Vercel's 4.5 MB limit)
+
+  const loadImg = (src: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Image load failed"));
+      img.src = src;
+    });
+
+  const blobFromCanvas = (
+    canvas: HTMLCanvasElement,
+    mime: string,
+    quality: number
+  ): Promise<Blob> =>
+    new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+        mime,
+        quality
+      );
+    });
+
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await loadImg(url);
+
+    // Try progressively smaller sizes until we fit under the limit
+    const attempts = [2000, 1500, 1200, 800];
+    for (const maxDim of attempts) {
       let { width, height } = img;
       if (width > maxDim || height > maxDim) {
         const scale = maxDim / Math.max(width, height);
         width = Math.round(width * scale);
         height = Math.round(height * scale);
       }
+
       const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext("2d")!;
       ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob(
-        (blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error("Canvas toBlob failed"));
-        },
-        "image/png",
-        quality
-      );
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Image load failed"));
-    };
-    img.src = url;
-  });
+
+      // Try JPEG first (much smaller for photo/watercolour art)
+      const jpegBlob = await blobFromCanvas(canvas, "image/jpeg", 0.85);
+      if (jpegBlob.size <= MAX_UPLOAD_BYTES) return jpegBlob;
+
+      // Try lower quality JPEG
+      const jpegLow = await blobFromCanvas(canvas, "image/jpeg", 0.7);
+      if (jpegLow.size <= MAX_UPLOAD_BYTES) return jpegLow;
+    }
+
+    // Last resort: 800px at low quality
+    const canvas = document.createElement("canvas");
+    canvas.width = 800;
+    canvas.height = 800;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, 0, 0, 800, 800);
+    return blobFromCanvas(canvas, "image/jpeg", 0.6);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function StatusBanner({ validation }: { validation?: Validation }) {
