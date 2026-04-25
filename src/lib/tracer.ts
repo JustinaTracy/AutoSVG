@@ -15,7 +15,7 @@
 
 import sharp from "sharp";
 import potrace from "potrace";
-import { analyzeLayerStrategy, type LayerStrategy } from "./openai";
+import { analyzeLayerStrategyWithRetry, type LayerStrategy } from "./openai";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -86,10 +86,15 @@ export interface TraceOptions {
   backgroundColor?: string;
 }
 
+export interface TraceResult {
+  svg: string;
+  description: string;
+}
+
 export async function traceImage(
   imageBuffer: Buffer,
   options: TraceOptions
-): Promise<string> {
+): Promise<TraceResult> {
   const bgColor =
     options.backgroundColor && options.backgroundColor !== "none"
       ? options.backgroundColor
@@ -162,7 +167,7 @@ export async function traceImage(
     .map(([hex]) => hex);
 
   if (foreground.length === 0) {
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`;
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`, description: "" };
   }
 
   // ── 5b. Merge near-duplicate colours + cap at max layers ────────
@@ -181,24 +186,22 @@ export async function traceImage(
   // Ask GPT-4o to look at the image and decide per-colour: is this a
   // solid fill layer (holes filled) or a detail layer (holes preserved)?
   let strategies: Map<string, LayerStrategy> = new Map();
-  try {
+  let imageDescription = "";
+  {
     const thumbBuf = await sharp(preprocessed)
       .resize(600, 600, { fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 60 })
       .toBuffer();
     const thumbB64 = thumbBuf.toString("base64");
-    const aiLayers = await analyzeLayerStrategy(
+    const result = await analyzeLayerStrategyWithRetry(
       thumbB64,
       "image/jpeg",
       foreground
     );
-    for (const layer of aiLayers) {
-      // Normalise hex for matching (AI may return different case)
+    imageDescription = result.imageDescription ?? "";
+    for (const layer of result.layers) {
       strategies.set(layer.color.toLowerCase(), layer);
     }
-  } catch (err) {
-    console.error("[tracer] AI layer strategy failed:", err);
-    // AI unavailable — default everything to "detail" (safe, no holes filled)
   }
 
   // ── 7. Per-colour mask → trace ─────────────────────────────────
@@ -302,10 +305,10 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`;
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, description: imageDescription };
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`;
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, description: imageDescription };
 }
 
 /* ------------------------------------------------------------------ */

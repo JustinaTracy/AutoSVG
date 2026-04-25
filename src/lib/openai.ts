@@ -151,7 +151,7 @@ export async function analyzeLayerStrategy(
   imageBase64: string,
   mimeType: string,
   colors: string[]
-): Promise<LayerStrategy[]> {
+): Promise<{ imageDescription?: string; layers: LayerStrategy[] }> {
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
     response_format: { type: "json_object" },
@@ -191,18 +191,41 @@ For EACH colour decide:
 
 IMPORTANT: When in doubt, choose "fill". The ONLY things that should be "detail" are text/lettering that sit on top of coloured shapes. Everything else is "fill".
 
-Return JSON: { "layers": [ { "color": "#hex", "role": "fill"|"detail", "fillHoles": true|false, "order": 1, "description": "..." } ] }
+Also include a top-level "imageDescription" field — a brief description of what the image depicts.
+
+Return JSON: { "imageDescription": "...", "layers": [ { "color": "#hex", "role": "fill"|"detail", "fillHoles": true|false, "order": 1, "description": "..." } ] }
 
 Return EVERY colour from the list above. Use the hex values EXACTLY as given.`,
           },
         ],
       },
     ],
-    max_tokens: 600,
+    max_tokens: 800,
   });
 
   const data = JSON.parse(response.choices[0].message.content || "{}");
-  return data.layers ?? [];
+  return {
+    imageDescription: data.imageDescription ?? "",
+    layers: data.layers ?? [],
+  };
+}
+
+/** Retry wrapper — tries up to 2 times. */
+export async function analyzeLayerStrategyWithRetry(
+  imageBase64: string,
+  mimeType: string,
+  colors: string[]
+): Promise<{ imageDescription?: string; layers: LayerStrategy[] }> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await analyzeLayerStrategy(imageBase64, mimeType, colors);
+      if (result.layers && result.layers.length > 0) return result;
+    } catch (err) {
+      console.error(`[openai] Layer strategy attempt ${attempt + 1} failed:`, err);
+      if (attempt === 0) continue; // retry once
+    }
+  }
+  return { layers: [] }; // fallback: no strategy
 }
 
 /* ------------------------------------------------------------------ */

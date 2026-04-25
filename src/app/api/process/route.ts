@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
-import { analyzeImageForCutting } from "@/lib/openai";
+// analyzeImageForCutting removed — combined into tracer's layer strategy call
 import { traceImage } from "@/lib/tracer";
 import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
 import { consolidateSVG } from "@/lib/svg-consolidator";
@@ -106,56 +106,17 @@ export async function POST(request: NextRequest) {
       mimeType === "image/jpeg" ||
       mimeType === "image/jpg"
     ) {
-      const base64 = buffer.toString("base64");
-
-      // AI analysis
-      let analysis;
-      try {
-        analysis = await analyzeImageForCutting(base64, mimeType);
-      } catch {
-        analysis = {
-          description: "Image (AI analysis unavailable)",
-          recommendedColors: 2,
-          isMultiLayered: false,
-          complexity: "moderate" as const,
-          suggestions: [
-            "AI analysis was unavailable — the image was traced with default settings.",
-          ],
-          threshold: 128,
-          backgroundColor: "#ffffff",
-        };
-      }
-
-      // Trace — the tracer already quantises to real image colours,
-      // creates per-colour masks, and traces each separately.
-      // The output is already clean: one <path> per colour, correct
-      // fills, fill-rule="evenodd".  No consolidation needed.
-      const tracedSVG = await traceImage(buffer, {
-        recommendedColors: analysis.recommendedColors ?? 2,
-        threshold: analysis.threshold,
-        backgroundColor: analysis.backgroundColor,
+      // Single AI call: quantise colours, ask GPT-4o for per-layer
+      // vinyl strategy (fill vs detail), trace each colour mask.
+      const traceResult = await traceImage(buffer, {
+        recommendedColors: 4,
+        backgroundColor: "#ffffff",
       });
 
-      // Build layer info from the traced paths
-      const tracedFills = [
-        ...new Set(
-          [...tracedSVG.matchAll(/fill="([^"]+)"/g)]
-            .map((m) => m[1])
-            .filter((f) => f !== "none" && f !== "transparent")
-        ),
-      ];
-      const tracedPaths = [...tracedSVG.matchAll(/<path /g)].length;
-      const layers = tracedFills.map((color) => ({
-        name: color === "#000000" ? "Design" : `Layer (${color})`,
-        color,
-        pathCount: 1,
-      }));
-
       // Self-repair any remaining issues, then validate
-      const { svg: repairedSVG, repairs } = repairSVG(tracedSVG);
+      const { svg: repairedSVG, repairs } = repairSVG(traceResult.svg);
       const validation = validateForCutting(repairedSVG);
 
-      // Update path/layer counts after repair
       const finalFills = [
         ...new Set(
           [...repairedSVG.matchAll(/fill="([^"]+)"/g)]
@@ -176,22 +137,17 @@ export async function POST(request: NextRequest) {
           detail: `Traced raster image into ${finalPaths} colour layer${finalPaths !== 1 ? "s" : ""} preserving original colours.`,
         },
         ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
-        ...(analysis.suggestions?.map((s: string) => ({
-          action: "info" as const,
-          detail: s,
-        })) ?? []),
       ];
 
       return NextResponse.json({
         success: true,
         svg: repairedSVG,
         analysis: {
-          description: analysis.description ?? "Processed image",
+          description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],
           colorCount: finalLayers.length,
           isMultiLayered: finalLayers.length > 1,
           layers: finalLayers,
-          complexity: analysis.complexity,
         },
         validation,
         changelog,
