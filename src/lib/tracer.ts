@@ -326,29 +326,39 @@ export async function traceImage(
   let simplifiedSVG: string | undefined;
   if (foreground.length >= 3 && silhouetteSVG) {
     try {
-      // Use the silhouette mask as the definitive boundary, then
-      // break it into coloured regions. Every pixel INSIDE the
-      // silhouette (silMask === 0) gets assigned to the nearest
-      // simplified colour. The outer shape is always the silhouette.
+      // ── Simplified approach ──────────────────────────────────
+      // 1. HEAVILY BLUR the preprocessed image to smooth out all
+      //    anti-aliasing, gradients, and subtle variations into
+      //    large clean colour regions.
+      // 2. Re-quantize the blurred image to just 3-4 colours.
+      // 3. For each pixel inside the silhouette, read the colour
+      //    from the BLURRED image → smooth, clean region boundaries.
+      // 4. Trace each colour region.
+
       const SIM_MAX = Math.min(4, foreground.length);
       const topColors = foreground.slice(0, SIM_MAX);
       const simColors = mergeNearDuplicates(topColors, counts, 100);
+      const simRgb = simColors.map((c) => hexToRgb(c));
+
+      // Heavy blur on the preprocessed image → smooth colour regions
+      const blurredBuf = await sharp(preprocessed)
+        .blur(15)
+        .ensureAlpha()
+        .raw()
+        .toBuffer();
 
       const simMasks = new Map<string, Buffer>();
       for (const c of simColors) {
         simMasks.set(c, Buffer.alloc(width * height, 255));
       }
 
-      const simRgb = simColors.map((c) => hexToRgb(c));
-
-      for (let i = 0; i < data.length; i += ch) {
-        const pi = i / ch;
-        // THE SILHOUETTE defines inside/outside — threshold 128 means
-        // < 128 is "inside" (black in the mask)
+      for (let pi = 0; pi < totalPixels; pi++) {
+        // Only inside the silhouette
         if (silMask[pi] >= 128) continue;
 
-        // Assign to nearest simplified colour using the original pixel data
-        const r = data[i], g = data[i + 1], b = data[i + 2];
+        // Read colour from the BLURRED image (smooth regions)
+        const bi = pi * 4;
+        const r = blurredBuf[bi], g = blurredBuf[bi + 1], b = blurredBuf[bi + 2];
         let bestIdx = 0;
         let bestDist = Infinity;
         for (let j = 0; j < simRgb.length; j++) {
