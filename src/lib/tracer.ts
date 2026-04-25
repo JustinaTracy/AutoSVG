@@ -76,6 +76,19 @@ function colorDistance(
   );
 }
 
+/** Split a compound path's d attribute into individual subpaths (each starting with M/m). */
+function splitSubpaths(d: string): string[] {
+  const parts: string[] = [];
+  // Split on M/m commands but keep the M/m with its subpath
+  const re = /[Mm][^Mm]*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(d)) !== null) {
+    const sp = m[0].trim();
+    if (sp.length > 10) parts.push(sp); // skip trivially small
+  }
+  return parts;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
@@ -317,97 +330,80 @@ export async function traceImage(
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
-  // ── 5c. Simplified trace ────────────────────────────────────────
-  // Takes the silhouette boundary and splits it into coloured regions.
-  // Every pixel inside the silhouette is assigned to its nearest
-  // simplified colour → no gaps between colours, clean tiling.
-  // Only generated when there are 3+ distinct foreground colours
-  // (otherwise it would look identical to the silhouette).
+  // ── 5c. Simplified — break apart silhouette and recolor ─────────
+  // No re-tracing, no masks, no blur. Just:
+  // 1. Parse each subpath from the silhouette's path data
+  // 2. Find the center point of each subpath
+  // 3. Sample the original image at that point to get the colour
+  // 4. Group subpaths by nearest simplified colour
+  // 5. Output one compound path per colour
   let simplifiedSVG: string | undefined;
   if (foreground.length >= 3 && silhouetteSVG) {
     try {
-      // ── Simplified approach ──────────────────────────────────
-      // 1. HEAVILY BLUR the preprocessed image to smooth out all
-      //    anti-aliasing, gradients, and subtle variations into
-      //    large clean colour regions.
-      // 2. Re-quantize the blurred image to just 3-4 colours.
-      // 3. For each pixel inside the silhouette, read the colour
-      //    from the BLURRED image → smooth, clean region boundaries.
-      // 4. Trace each colour region.
-
       const SIM_MAX = Math.min(4, foreground.length);
-      const topColors = foreground.slice(0, SIM_MAX);
-      const simColors = mergeNearDuplicates(topColors, counts, 100);
+      const simColors = foreground.slice(0, SIM_MAX);
       const simRgb = simColors.map((c) => hexToRgb(c));
 
-      // Heavy blur on the preprocessed image → smooth colour regions
-      const blurredBuf = await sharp(preprocessed)
-        .blur(15)
+      // Extract subpaths from the silhouette's d attribute
+      const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
+      const subpaths = splitSubpaths(silD);
+
+      // For each subpath, find its center and sample the original image colour
+      const colorGroups = new Map<string, string[]>();
+      for (const c of simColors) colorGroups.set(c, []);
+
+      // Read the flattened image for colour sampling
+      const sampleBuf = await sharp(preprocessed)
         .ensureAlpha()
         .raw()
         .toBuffer();
 
-      const simMasks = new Map<string, Buffer>();
-      for (const c of simColors) {
-        simMasks.set(c, Buffer.alloc(width * height, 255));
-      }
+      for (const sp of subpaths) {
+        // Get approximate center of subpath from its coordinates
+        const coords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
+        if (coords.length < 2) continue;
 
-      for (let pi = 0; pi < totalPixels; pi++) {
-        // Only inside the silhouette
-        if (silMask[pi] >= 128) continue;
-
-        // Read colour from the BLURRED image (smooth regions)
-        const bi = pi * 4;
-        const r = blurredBuf[bi], g = blurredBuf[bi + 1], b = blurredBuf[bi + 2];
-        let bestIdx = 0;
-        let bestDist = Infinity;
-        for (let j = 0; j < simRgb.length; j++) {
-          const d =
-            (r - simRgb[j][0]) ** 2 +
-            (g - simRgb[j][1]) ** 2 +
-            (b - simRgb[j][2]) ** 2;
-          if (d < bestDist) {
-            bestDist = d;
-            bestIdx = j;
+        let sumX = 0, sumY = 0, n = 0;
+        for (let i = 0; i < coords.length - 1; i += 2) {
+          if (isFinite(coords[i]) && isFinite(coords[i + 1])) {
+            sumX += coords[i];
+            sumY += coords[i + 1];
+            n++;
           }
         }
-        simMasks.get(simColors[bestIdx])![pi] = 0;
+        if (n === 0) continue;
+        const cx = Math.round(sumX / n);
+        const cy = Math.round(sumY / n);
+
+        // Clamp to image bounds
+        const px = Math.max(0, Math.min(width - 1, cx));
+        const py = Math.max(0, Math.min(height - 1, cy));
+        const pi = (py * width + px) * 4;
+        const r = sampleBuf[pi], g = sampleBuf[pi + 1], b = sampleBuf[pi + 2];
+
+        // Find nearest simplified colour
+        let bestIdx = 0, bestDist = Infinity;
+        for (let j = 0; j < simRgb.length; j++) {
+          const d = (r - simRgb[j][0]) ** 2 + (g - simRgb[j][1]) ** 2 + (b - simRgb[j][2]) ** 2;
+          if (d < bestDist) { bestDist = d; bestIdx = j; }
+        }
+        colorGroups.get(simColors[bestIdx])!.push(sp);
       }
 
-      // Trace each simplified colour mask
+      // Build one compound path per colour
+      const vb = silhouetteSVG.match(/viewBox="([^"]*)"/)?.[1] ?? `0 0 ${width} ${height}`;
       const simPaths: string[] = [];
-      for (const color of simColors) {
-        const mask = simMasks.get(color)!;
-        const maskPng = await sharp(mask, {
-          raw: { width, height, channels: 1 },
-        })
-          .png()
-          .toBuffer();
-
-        const traced = await traceAsync(maskPng, {
-          threshold: 128,
-          color,
-          background: "transparent",
-          turdSize: 100,
-          optTolerance: 2.0,
-        });
-
-        for (const m of traced.matchAll(/<path\b[^>]*>/gi)) {
-          let p = m[0];
-          if (!/fill-rule/.test(p))
-            p = p.replace("<path", '<path fill-rule="evenodd"');
-          if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, `fill="${color}"`);
-          const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
-          if (dAttr.length < 50) continue;
-          simPaths.push(p);
-        }
+      for (const [color, sps] of colorGroups) {
+        if (sps.length === 0) continue;
+        const d = sps.join(" ");
+        simPaths.push(`<path d="${d}" fill="${color}" fill-rule="evenodd"/>`);
       }
 
       if (simPaths.length > 0) {
-        simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
+        simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">\n${simPaths.join("\n")}\n</svg>`;
       }
     } catch {
-      // Simplified trace failed — skip it
+      // Simplified failed — skip it
     }
   }
 
