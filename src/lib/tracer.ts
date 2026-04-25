@@ -142,8 +142,9 @@ export async function traceImage(
     alphaMask[i / ch] = isTransparent ? 0 : 1;
     if (isTransparent) transparentPixelCount++;
   }
-  // Only use alpha path if at least 1% of pixels are actually transparent
-  const reallyHasAlpha = hasAlpha && transparentPixelCount > totalPixels * 0.01;
+  // Use alpha path if there are ANY transparent pixels. Zero = fake alpha
+  // (PNG has alpha channel but every pixel is opaque, like a JPEG saved as PNG).
+  const reallyHasAlpha = hasAlpha && transparentPixelCount > 0;
 
   // ── 3. Flatten and quantise ────────────────────────────────────
   const preprocessed = await resized
