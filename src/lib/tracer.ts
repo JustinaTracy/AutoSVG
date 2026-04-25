@@ -170,18 +170,43 @@ export async function traceImage(
       .sort((a, b) => b[1] - a[1])
       .map(([hex]) => hex);
   } else {
-    // No alpha: detect dominant colour as background
-    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    const dominantHex = sorted[0][0];
-    const dominantRgb = hexToRgb(dominantHex);
+    // No alpha: detect background from EDGE pixels (borders of the image).
+    // The background is whatever colour dominates the edges — this is far
+    // more reliable than "most common overall" which fails when the
+    // background is a gradient (many slightly different shades) while the
+    // design is one solid colour.
+    const edgeCounts = new Map<string, number>();
+    const EDGE_WIDTH = 3; // sample 3px border
 
-    foreground = sorted
+    for (let i = 0; i < data.length; i += ch) {
+      const pi = i / ch;
+      const px = pi % width;
+      const py = Math.floor(pi / width);
+      const isEdge =
+        px < EDGE_WIDTH ||
+        px >= width - EDGE_WIDTH ||
+        py < EDGE_WIDTH ||
+        py >= height - EDGE_WIDTH;
+      if (!isEdge) continue;
+      const hex = rgbToHex(data[i], data[i + 1], data[i + 2]);
+      edgeCounts.set(hex, (edgeCounts.get(hex) || 0) + 1);
+    }
+
+    // The most common edge colour is the background
+    const edgeSorted = [...edgeCounts.entries()].sort(
+      (a, b) => b[1] - a[1]
+    );
+    const bgHex = edgeSorted[0]?.[0] ?? "#ffffff";
+    const bgRgb = hexToRgb(bgHex);
+
+    foreground = [...counts.entries()]
       .filter(([hex, count]) => {
-        if (hex === dominantHex) return false;
-        if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
+        if (hex === bgHex) return false;
+        if (colorDistance(hexToRgb(hex), bgRgb) <= BG_DISTANCE) return false;
         if (count < totalPixels * MIN_SHARE) return false;
         return true;
       })
+      .sort((a, b) => b[1] - a[1])
       .map(([hex]) => hex);
   }
 
@@ -205,16 +230,20 @@ export async function traceImage(
         silMask[pi] = alphaMask[pi] ? 0 : 255;
       }
     } else {
-      // No alpha: tight dominant-colour detection
-      const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-      const domRgb = hexToRgb(sorted[0][0]);
-      const SIL_BG_DIST = 25;
+      // No alpha: use edge-detected background colour
+      const edgeCounts = new Map<string, number>();
       for (let i = 0; i < data.length; i += ch) {
-        const dist = colorDistance(
-          [data[i], data[i + 1], data[i + 2]],
-          domRgb
-        );
-        silMask[i / ch] = dist > SIL_BG_DIST ? 0 : 255;
+        const pi = i / ch;
+        const px = pi % width, py = Math.floor(pi / width);
+        if (px >= 3 && px < width - 3 && py >= 3 && py < height - 3) continue;
+        const hex = rgbToHex(data[i], data[i + 1], data[i + 2]);
+        edgeCounts.set(hex, (edgeCounts.get(hex) || 0) + 1);
+      }
+      const edgeBg = [...edgeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "#ffffff";
+      const edgeBgRgb = hexToRgb(edgeBg);
+      for (let i = 0; i < data.length; i += ch) {
+        const dist = colorDistance([data[i], data[i + 1], data[i + 2]], edgeBgRgb);
+        silMask[i / ch] = dist > BG_DISTANCE ? 0 : 255;
       }
     }
     const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
@@ -399,12 +428,10 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    const trimmed = trimViewBox(cleaned, width, height);
-    return { svg: trimmed, silhouetteSVG, description: imageDescription };
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
   }
 
-  const trimmed = trimViewBox(pathElements, width, height);
-  return { svg: trimmed, silhouetteSVG, description: imageDescription };
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
 }
 
 /**
