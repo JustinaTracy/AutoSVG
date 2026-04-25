@@ -96,90 +96,129 @@ export async function traceImage(
   imageBuffer: Buffer,
   options: TraceOptions
 ): Promise<TraceResult> {
-  const bgColor =
-    options.backgroundColor && options.backgroundColor !== "none"
-      ? options.backgroundColor
-      : "#ffffff";
   const designColors = Math.max(1, Math.min(options.recommendedColors, 6));
 
-  // ── 1. Preprocess ──────────────────────────────────────────────
-  // Lower resolution = fewer contour points = smoother, smaller paths.
-  // 1200px is enough detail for cutting machines while keeping
-  // path data manageable (~50-200 nodes per layer vs 12,000+).
-  const preprocessed = await sharp(imageBuffer)
-    .resize(1200, 1200, { fit: "inside", withoutEnlargement: true })
-    .flatten({ background: bgColor })
-    .toBuffer();
+  // ── 1. Check for alpha channel ─────────────────────────────────
+  const meta = await sharp(imageBuffer).metadata();
+  const hasAlpha = !!(meta.channels && meta.channels >= 4 && meta.hasAlpha);
 
-  // ── 2. Quantise to a generous palette ────────────────────────────
-  // Capture ALL meaningful colours. Err on the side of too many —
-  // we filter background and cluster later. 24 palette entries is
-  // enough to capture 5-8 real design colours plus anti-aliasing.
-  const quantizedBuf = await sharp(preprocessed)
-    .png({ palette: true, colors: 24 })
-    .toBuffer();
+  // ── 2. Resize and read raw RGBA (before flattening) ────────────
+  const resized = sharp(imageBuffer).resize(1200, 1200, {
+    fit: "inside",
+    withoutEnlargement: true,
+  });
 
-  // ── 3. Read quantised pixels ───────────────────────────────────
-  const { data, info } = await sharp(quantizedBuf)
+  const { data: rawRGBA, info: rawInfo } = await resized
+    .clone()
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const { width, height } = info;
-  const ch = 4; // RGBA
+  const { width, height } = rawInfo;
+  const ch = 4;
+  const totalPixels = width * height;
 
-  // ── 4. Find unique colours + pixel counts ──────────────────────
+  // Build alpha mask: true = opaque (foreground), false = transparent (bg)
+  const alphaMask = new Uint8Array(totalPixels);
+  if (hasAlpha) {
+    for (let i = 0; i < rawRGBA.length; i += ch) {
+      alphaMask[i / ch] = rawRGBA[i + 3] > 128 ? 1 : 0;
+    }
+  }
+
+  // ── 3. Flatten and quantise ────────────────────────────────────
+  const preprocessed = await resized
+    .clone()
+    .flatten({ background: "#ffffff" })
+    .toBuffer();
+
+  const quantizedBuf = await sharp(preprocessed)
+    .png({ palette: true, colors: 24 })
+    .toBuffer();
+
+  const { data } = await sharp(quantizedBuf)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  // ── 4. Find unique colours (opaque pixels only for alpha images) ─
   const counts = new Map<string, number>();
   for (let i = 0; i < data.length; i += ch) {
+    if (hasAlpha && !alphaMask[i / ch]) continue; // skip transparent pixels
     const hex = rgbToHex(data[i], data[i + 1], data[i + 2]);
     counts.set(hex, (counts.get(hex) || 0) + 1);
   }
 
-  // ── 5. Strip background colour ──────────────────────────────────
-  // The background is the DOMINANT colour (most pixels). Remove it
-  // and anything close to it. That's all — don't blanket-remove
-  // near-black or near-white, as those may be the actual design.
+  // ── 5. Strip background ────────────────────────────────────────
+  // If the image has alpha, the background is ALREADY removed — the
+  // alpha channel tells us exactly which pixels are foreground.
+  // We only need to filter the dominant colour for non-alpha images
+  // (JPEGs, PNGs without transparency).
   const BG_DISTANCE = 60;
-  const totalPixels = width * height;
   const MIN_SHARE = 0.004;
+  const opaqueCount = hasAlpha
+    ? alphaMask.reduce((s, v) => s + v, 0)
+    : totalPixels;
 
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const dominantHex = sorted[0][0];
-  const dominantRgb = hexToRgb(dominantHex);
+  let foreground: string[];
 
-  let foreground = sorted
-    .filter(([hex, count]) => {
-      if (hex === dominantHex) return false;
-      if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
-      if (count < totalPixels * MIN_SHARE) return false;
-      return true;
-    })
-    .map(([hex]) => hex);
+  if (hasAlpha) {
+    // Alpha image: every colour in `counts` is already foreground
+    // (we skipped transparent pixels above). Just filter noise.
+    foreground = [...counts.entries()]
+      .filter(([, count]) => count >= opaqueCount * MIN_SHARE)
+      .sort((a, b) => b[1] - a[1])
+      .map(([hex]) => hex);
+  } else {
+    // No alpha: detect dominant colour as background
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const dominantHex = sorted[0][0];
+    const dominantRgb = hexToRgb(dominantHex);
+
+    foreground = sorted
+      .filter(([hex, count]) => {
+        if (hex === dominantHex) return false;
+        if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
+        if (count < totalPixels * MIN_SHARE) return false;
+        return true;
+      })
+      .map(([hex]) => hex);
+  }
 
   if (foreground.length === 0) {
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`, description: "" };
+    return {
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`,
+      description: "",
+    };
   }
 
   // ── 5a. Silhouette trace ──────────────────────────────────────
   // Separate trace: ALL non-background pixels as one solid shape.
-  // Uses a TIGHT threshold — only the exact dominant colour (and very
-  // close shades) counts as background. Everything else is foreground.
-  // This ensures light interior areas (eyes, highlights) are NOT cut
-  // out as holes — the silhouette is a solid filled outline.
+  // For alpha images: use the alpha mask directly — perfect accuracy.
+  // For non-alpha: use tight dominant-colour detection.
   let silhouetteSVG: string | undefined;
   if (foreground.length > 1) {
-    const SIL_BG_DIST = 25; // much tighter than the colour-layer BG_DISTANCE
     const silMask = Buffer.alloc(width * height);
-    for (let i = 0; i < data.length; i += ch) {
-      const dist = colorDistance(
-        [data[i], data[i + 1], data[i + 2]],
-        dominantRgb
-      );
-      silMask[i / ch] = dist > SIL_BG_DIST ? 0 : 255;
+    if (hasAlpha) {
+      // Alpha mask is the ground truth — opaque = foreground
+      for (let pi = 0; pi < totalPixels; pi++) {
+        silMask[pi] = alphaMask[pi] ? 0 : 255;
+      }
+    } else {
+      // No alpha: tight dominant-colour detection
+      const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+      const domRgb = hexToRgb(sorted[0][0]);
+      const SIL_BG_DIST = 25;
+      for (let i = 0; i < data.length; i += ch) {
+        const dist = colorDistance(
+          [data[i], data[i + 1], data[i + 2]],
+          domRgb
+        );
+        silMask[i / ch] = dist > SIL_BG_DIST ? 0 : 255;
+      }
     }
-    // Light blur to close tiny gaps between the design and background
     const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
-      .blur(2)
+      .blur(1.5)
       .threshold(128)
       .png()
       .toBuffer();
@@ -247,7 +286,14 @@ export async function traceImage(
   }
 
   // ── 7. Per-colour mask → trace ─────────────────────────────────
-  const colorOwnership = buildColorOwnership(foreground, counts, dominantRgb, BG_DISTANCE);
+  // For alpha images the bg colour doesn't matter (transparent pixels
+  // were already excluded from counts). Use white as a placeholder.
+  const bgRgbForOwnership: [number, number, number] = hasAlpha
+    ? [255, 255, 255]
+    : hexToRgb(
+        [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "#ffffff"
+      );
+  const colorOwnership = buildColorOwnership(foreground, counts, bgRgbForOwnership, BG_DISTANCE);
 
   const pathElements: string[] = [];
 
@@ -259,10 +305,12 @@ export async function traceImage(
       `[tracer] ${color}: ${strategy ? strategy.role + (strategy.fillHoles ? " (fill holes)" : " (keep holes)") : "no strategy (default: detail)"} — ${strategy?.description ?? ""}`
     );
 
-    // Binary mask: any pixel matching one of the owned colours → black
+    // Binary mask: opaque pixels matching one of the owned colours → black
     const mask = Buffer.alloc(width * height);
     for (let i = 0; i < data.length; i += ch) {
       const pi = i / ch;
+      // For alpha images, skip transparent pixels
+      if (hasAlpha && !alphaMask[pi]) { mask[pi] = 255; continue; }
       const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
       mask[pi] = ownedHexes.includes(px) ? 0 : 255;
     }
