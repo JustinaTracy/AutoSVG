@@ -258,8 +258,12 @@ export async function traceImage(
     }
     // Blur + threshold for clean edges, then use for BOTH silhouette
     // trace and as the boundary reference for simplified mode
+    // Stronger blur for non-alpha (JPEG artifacts, quantization noise
+    // create thin horizontal bands that look like scan lines).
+    // Alpha images need less blur since the mask is clean.
+    const silBlur = hasAlpha ? 1.5 : 5;
     const silCleanBuf = await sharp(silMask, { raw: { width, height, channels: 1 } })
-      .blur(1.5)
+      .blur(silBlur)
       .threshold(128)
       .raw()
       .toBuffer();
@@ -274,7 +278,7 @@ export async function traceImage(
         threshold: 128,
         color: "#000000",
         background: "transparent",
-        turdSize: 150,
+        turdSize: 300,  // aggressive — silhouettes should be clean outlines
         optTolerance: 2.0,
       });
       const silPaths: string[] = [];
