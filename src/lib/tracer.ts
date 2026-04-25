@@ -194,9 +194,18 @@ export async function traceImage(
       mask[pi] = ownedHexes.includes(px) ? 0 : 255;
     }
 
+    // Morphological close: blur → re-threshold.
+    // Fills interior holes (text cutouts inside coloured circles)
+    // so each colour layer becomes a SOLID shape for vinyl layering.
+    // The text colour goes ON TOP as a separate layer.
+    //
+    // Sigma 6 at 1200px fills ~12-18px gaps (text-stroke-width holes)
+    // while preserving ~30px+ features (letter counters inside B, D).
     const maskPng = await sharp(mask, {
       raw: { width, height, channels: 1 },
     })
+      .blur(6)
+      .threshold(128)
       .png()
       .toBuffer();
 
