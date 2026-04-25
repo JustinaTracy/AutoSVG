@@ -134,18 +134,14 @@ export async function traceImage(
     counts.set(hex, (counts.get(hex) || 0) + 1);
   }
 
-  // ── 5. Strip background colours ─────────────────────────────────
-  // The background is the DOMINANT colour (most pixels). Also strip
-  // near-white and near-black (common image backgrounds) plus any
-  // colour close to the dominant.
-  const whiteRgb: [number, number, number] = [255, 255, 255];
-  const blackRgb: [number, number, number] = [0, 0, 0];
+  // ── 5. Strip background colour ──────────────────────────────────
+  // The background is the DOMINANT colour (most pixels). Remove it
+  // and anything close to it. That's all — don't blanket-remove
+  // near-black or near-white, as those may be the actual design.
   const BG_DISTANCE = 60;
-
   const totalPixels = width * height;
   const MIN_SHARE = 0.004;
 
-  // Find the dominant colour
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const dominantHex = sorted[0][0];
   const dominantRgb = hexToRgb(dominantHex);
@@ -156,11 +152,7 @@ export async function traceImage(
       if (hex === dominantHex) return false;
       // Remove colours close to the dominant
       if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
-      // Remove near-white
-      if (colorDistance(hexToRgb(hex), whiteRgb) <= BG_DISTANCE) return false;
-      // Remove near-black
-      if (colorDistance(hexToRgb(hex), blackRgb) <= BG_DISTANCE) return false;
-      // Remove anti-aliasing noise
+      // Remove anti-aliasing noise (< 0.4% of pixels)
       if (count < totalPixels * MIN_SHARE) return false;
       return true;
     })
@@ -305,10 +297,56 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, description: imageDescription };
+    const trimmed = trimViewBox(cleaned, width, height);
+    return { svg: trimmed, description: imageDescription };
   }
 
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, description: imageDescription };
+  const trimmed = trimViewBox(pathElements, width, height);
+  return { svg: trimmed, description: imageDescription };
+}
+
+/**
+ * Compute a tight viewBox around actual path content with 5% padding.
+ */
+function trimViewBox(
+  elements: string[],
+  origW: number,
+  origH: number
+): string {
+  // Extract all numeric coordinate pairs from path d attributes
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  for (const el of elements) {
+    if (el.startsWith("<!--")) continue;
+    const d = el.match(/\bd="([^"]*)"/)?.[1] ?? "";
+    // Pull all numbers from path data (coordinates come in pairs)
+    const nums = d.match(/-?[\d.]+/g)?.map(Number) ?? [];
+    for (let i = 0; i < nums.length - 1; i += 2) {
+      const x = nums[i], y = nums[i + 1];
+      if (isFinite(x) && isFinite(y)) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Fall back to original dimensions if no coordinates found
+  if (!isFinite(minX)) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${origW} ${origH}">\n${elements.join("\n")}\n</svg>`;
+  }
+
+  // Add 5% padding
+  const w = maxX - minX;
+  const h = maxY - minY;
+  const pad = Math.max(w, h) * 0.05;
+  const vbX = Math.max(0, minX - pad).toFixed(1);
+  const vbY = Math.max(0, minY - pad).toFixed(1);
+  const vbW = (w + pad * 2).toFixed(1);
+  const vbH = (h + pad * 2).toFixed(1);
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbX} ${vbY} ${vbW} ${vbH}">\n${elements.join("\n")}\n</svg>`;
 }
 
 /* ------------------------------------------------------------------ */

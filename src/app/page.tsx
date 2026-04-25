@@ -76,6 +76,7 @@ interface ChangelogEntry {
 interface ProcessResult {
   success: boolean;
   svg: string;
+  silhouetteSVG?: string;
   analysis: Analysis;
   validation?: Validation;
   changelog?: ChangelogEntry[];
@@ -108,6 +109,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
+  const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -121,12 +123,17 @@ export default function Home() {
     return () => clearInterval(id);
   }, [status]);
 
-  // Blob URL for the result SVG
+  // Blob URL for the result SVG (respects color/silhouette mode)
+  const activeSVG =
+    outputMode === "silhouette" && result?.silhouetteSVG
+      ? result.silhouetteSVG
+      : result?.svg ?? "";
+
   const svgBlobUrl = useMemo(() => {
-    if (!result?.svg) return "";
-    const blob = new Blob([result.svg], { type: "image/svg+xml" });
+    if (!activeSVG) return "";
+    const blob = new Blob([activeSVG], { type: "image/svg+xml" });
     return URL.createObjectURL(blob);
-  }, [result?.svg]);
+  }, [activeSVG]);
 
   /* ── Handlers ─────────────────────────────────────────────── */
 
@@ -151,6 +158,7 @@ export default function Home() {
     setFile(f);
     setResult(null);
     setError("");
+    setOutputMode("color");
     setStatus("processing");
 
     // Build original preview
@@ -221,15 +229,16 @@ export default function Home() {
   );
 
   const handleDownload = useCallback(() => {
-    if (!result?.svg || !file) return;
-    const blob = new Blob([result.svg], { type: "image/svg+xml" });
+    if (!activeSVG || !file) return;
+    const blob = new Blob([activeSVG], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${file.name.replace(/\.[^.]+$/, "")}_cut-ready.svg`;
+    const suffix = outputMode === "silhouette" ? "_silhouette" : "_cut-ready";
+    a.download = `${file.name.replace(/\.[^.]+$/, "")}${suffix}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [result, file]);
+  }, [activeSVG, file, outputMode]);
 
   const handleReset = useCallback(() => {
     setStatus("idle");
@@ -368,7 +377,7 @@ export default function Home() {
                   <h3 className="mb-3 font-heading text-lg text-plum-wine-900">
                     Original
                   </h3>
-                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100">
+                  <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100 p-4">
                     {originalPreview && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -413,7 +422,7 @@ export default function Home() {
                     )}
                   </div>
                   <div
-                    className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100"
+                    className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100 p-4"
                     style={{
                       backgroundImage:
                         "url(\"data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='10' height='10' fill='%23f0f0f0'/%3E%3Crect x='10' y='10' width='10' height='10' fill='%23f0f0f0'/%3E%3C/svg%3E\")",
@@ -428,6 +437,32 @@ export default function Home() {
                       />
                     )}
                   </div>
+
+                  {/* Full Color / Silhouette toggle */}
+                  {result.silhouetteSVG && (
+                    <div className="mt-3 flex rounded-full border border-neutral-200 bg-neutral-100 p-0.5">
+                      <button
+                        onClick={() => setOutputMode("color")}
+                        className={`flex-1 rounded-full px-4 py-1.5 font-body text-sm font-medium transition-colors ${
+                          outputMode === "color"
+                            ? "bg-plum-wine-700 text-white shadow-sm"
+                            : "text-plum-wine-600 hover:text-plum-wine-800"
+                        }`}
+                      >
+                        Full Color
+                      </button>
+                      <button
+                        onClick={() => setOutputMode("silhouette")}
+                        className={`flex-1 rounded-full px-4 py-1.5 font-body text-sm font-medium transition-colors ${
+                          outputMode === "silhouette"
+                            ? "bg-plum-wine-700 text-white shadow-sm"
+                            : "text-plum-wine-600 hover:text-plum-wine-800"
+                        }`}
+                      >
+                        Silhouette
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
