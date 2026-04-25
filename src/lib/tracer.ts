@@ -231,8 +231,9 @@ export async function traceImage(
   // For alpha images: use the alpha mask directly — perfect accuracy.
   // For non-alpha: use tight dominant-colour detection.
   let silhouetteSVG: string | undefined;
+  // Hoist silMask so it's available to both silhouette and simplified traces
+  const silMask = Buffer.alloc(width * height, 255); // 255 = background
   if (foreground.length > 1) {
-    const silMask = Buffer.alloc(width * height);
     if (hasAlpha) {
       // Alpha mask is the ground truth — opaque = foreground
       for (let pi = 0; pi < totalPixels; pi++) {
@@ -255,9 +256,17 @@ export async function traceImage(
         silMask[i / ch] = dist > BG_DISTANCE ? 0 : 255;
       }
     }
-    const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
+    // Blur + threshold for clean edges, then use for BOTH silhouette
+    // trace and as the boundary reference for simplified mode
+    const silCleanBuf = await sharp(silMask, { raw: { width, height, channels: 1 } })
       .blur(1.5)
       .threshold(128)
+      .raw()
+      .toBuffer();
+    // Update silMask in place with the cleaned version
+    silCleanBuf.copy(silMask);
+
+    const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
       .png()
       .toBuffer();
     try {
@@ -317,45 +326,42 @@ export async function traceImage(
   let simplifiedSVG: string | undefined;
   if (foreground.length >= 3 && silhouetteSVG) {
     try {
-      // Reduce to 3-5 colours for the simplified palette
-      const SIM_MAX = Math.min(5, foreground.length);
-      const simColors =
-        foreground.length > SIM_MAX
-          ? clusterForeground(foreground, counts, SIM_MAX)
-          : [...foreground];
+      // Use the silhouette mask as the definitive boundary, then
+      // break it into coloured regions. Every pixel INSIDE the
+      // silhouette (silMask === 0) gets assigned to the nearest
+      // simplified colour. The outer shape is always the silhouette.
+      const SIM_MAX = Math.min(4, foreground.length);
+      const topColors = foreground.slice(0, SIM_MAX);
+      const simColors = mergeNearDuplicates(topColors, counts, 100);
 
-      // For each pixel inside the silhouette, assign to nearest sim colour
       const simMasks = new Map<string, Buffer>();
       for (const c of simColors) {
-        simMasks.set(c, Buffer.alloc(width * height, 255)); // start all white
+        simMasks.set(c, Buffer.alloc(width * height, 255));
       }
+
+      const simRgb = simColors.map((c) => hexToRgb(c));
 
       for (let i = 0; i < data.length; i += ch) {
         const pi = i / ch;
-        // Must be inside the silhouette
-        const isForeground = hasAlpha
-          ? alphaMask[pi] === 1
-          : (() => {
-              // For non-alpha: pixel is foreground if NOT close to edge bg
-              const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
-              // Quick check: was this pixel counted in foreground colours?
-              return counts.has(px);
-            })();
-        if (!isForeground) continue;
+        // THE SILHOUETTE defines inside/outside — threshold 128 means
+        // < 128 is "inside" (black in the mask)
+        if (silMask[pi] >= 128) continue;
 
-        // Find nearest simplified colour
+        // Assign to nearest simplified colour using the original pixel data
         const r = data[i], g = data[i + 1], b = data[i + 2];
-        let bestColor = simColors[0];
+        let bestIdx = 0;
         let bestDist = Infinity;
-        for (const sc of simColors) {
-          const [sr, sg, sb] = hexToRgb(sc);
-          const d = (r - sr) ** 2 + (g - sg) ** 2 + (b - sb) ** 2;
+        for (let j = 0; j < simRgb.length; j++) {
+          const d =
+            (r - simRgb[j][0]) ** 2 +
+            (g - simRgb[j][1]) ** 2 +
+            (b - simRgb[j][2]) ** 2;
           if (d < bestDist) {
             bestDist = d;
-            bestColor = sc;
+            bestIdx = j;
           }
         }
-        simMasks.get(bestColor)![pi] = 0; // black = this colour
+        simMasks.get(simColors[bestIdx])![pi] = 0;
       }
 
       // Trace each simplified colour mask
