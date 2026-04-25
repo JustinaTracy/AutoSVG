@@ -568,18 +568,12 @@ export default function Home() {
               <div className="flex flex-wrap justify-center gap-4">
                 <button
                   onClick={handleDownload}
-                  className={`inline-flex items-center gap-2 rounded-full px-8 py-3.5 font-body text-base font-semibold shadow-sm transition-colors ${
-                    result.validation?.status === "fail"
-                      ? "bg-sunset-red-500 text-white hover:bg-sunset-red-600"
-                      : "bg-plum-wine-700 text-white hover:bg-plum-wine-800"
-                  }`}
+                  className="inline-flex items-center gap-2 rounded-full bg-plum-wine-700 px-8 py-3.5 font-body text-base font-semibold text-white shadow-sm transition-colors hover:bg-plum-wine-800"
                 >
                   <Download size={18} />
-                  {result.validation?.status === "fail"
-                    ? "Download Anyway (Issues Found)"
-                    : result.validation?.status === "review"
-                      ? "Download (Review Recommended)"
-                      : "Download Cut-Ready SVG"}
+                  {result.validation?.status === "review"
+                    ? "Download (Review Recommended)"
+                    : "Download Cut-Ready SVG"}
                 </button>
                 <button
                   onClick={handleReset}

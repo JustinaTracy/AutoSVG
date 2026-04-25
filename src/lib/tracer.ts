@@ -140,9 +140,12 @@ export async function traceImage(
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`;
   }
 
-  // ── 5b. Cluster similar foreground colours to the target count ──
-  if (foreground.length > designColors) {
-    foreground = clusterForeground(foreground, counts, designColors);
+  // ── 5b. Cluster only if there are too many distinct colours ─────
+  // Keep up to 8 distinct layers. Only cluster if quantisation
+  // produced more than that (unlikely with palette:8, but safety net).
+  const MAX_LAYERS = 8;
+  if (foreground.length > MAX_LAYERS) {
+    foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
   // ── 6. Per-colour mask → trace ─────────────────────────────────
@@ -193,6 +196,19 @@ export async function traceImage(
         } else {
           p = p.replace("<path", `<path fill="${color}"`);
         }
+
+        // Close any open subpaths (potrace sometimes omits trailing Z)
+        p = p.replace(/\bd="([^"]*)"/, (_m, d) => {
+          const trimmed = d.trim();
+          if (trimmed && !/[zZ]\s*$/.test(trimmed)) {
+            return `d="${trimmed} Z"`;
+          }
+          return `d="${trimmed}"`;
+        });
+
+        // Skip empty paths
+        const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
+        if (!dAttr.trim() || !/[MLCSQTAmlcsqta]/.test(dAttr)) continue;
 
         pathElements.push(p);
       }

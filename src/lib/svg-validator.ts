@@ -248,6 +248,66 @@ export function validateForCutting(svg: string): ValidationResult {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Self-repair — fix every fixable critical issue                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * If WE generated the SVG, WE fix any problems before giving it to
+ * the customer. This runs after validation and patches anything the
+ * checklist flagged as critical + fixable.
+ */
+export function repairSVG(svg: string): { svg: string; repairs: string[] } {
+  const repairs: string[] = [];
+
+  // 1. Close open paths
+  let repaired = svg.replace(
+    /(\bd=")((?:(?!")[^])*)(")/g,
+    (_m, pre, pathData, post) => {
+      const trimmed = pathData.trim();
+      if (
+        trimmed &&
+        !/[zZ]\s*$/.test(trimmed) &&
+        /[MLCSQTAmlcsqta]/.test(trimmed)
+      ) {
+        return `${pre}${trimmed} Z${post}`;
+      }
+      return `${pre}${trimmed}${post}`;
+    }
+  );
+  if (repaired !== svg) repairs.push("Closed open paths.");
+
+  // 2. Remove any lingering gradients
+  if (/<(linearGradient|radialGradient)[\s>]/i.test(repaired)) {
+    repaired = repaired.replace(/<linearGradient[^]*?<\/linearGradient>/gi, "");
+    repaired = repaired.replace(/<radialGradient[^]*?<\/radialGradient>/gi, "");
+    repaired = repaired.replace(/fill\s*=\s*"url\(#[^)]*\)"/gi, 'fill="#000000"');
+    repairs.push("Removed residual gradients.");
+  }
+
+  // 3. Remove any lingering filters
+  if (/<filter[\s>]/i.test(repaired)) {
+    repaired = repaired.replace(/<filter[^]*?<\/filter>/gi, "");
+    repaired = repaired.replace(/filter\s*=\s*"[^"]*"/gi, "");
+    repairs.push("Removed residual filters.");
+  }
+
+  // 4. Remove any embedded images
+  if (/<image[\s>]/i.test(repaired)) {
+    repaired = repaired.replace(/<image[^>]*\/>/gi, "");
+    repaired = repaired.replace(/<image[^]*?<\/image>/gi, "");
+    repairs.push("Removed embedded raster images.");
+  }
+
+  // 5. Ensure xmlns
+  if (!/xmlns\s*=/.test(repaired)) {
+    repaired = repaired.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+    repairs.push("Added SVG namespace.");
+  }
+
+  return { svg: repaired, repairs };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Changelog builder                                                  */
 /* ------------------------------------------------------------------ */
 

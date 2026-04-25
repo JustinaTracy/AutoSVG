@@ -6,6 +6,7 @@ import { checkAndFixSVG, optimizeSVG } from "@/lib/svg-utils";
 import { consolidateSVG } from "@/lib/svg-consolidator";
 import {
   validateForCutting,
+  repairSVG,
   buildChangelog,
   extractInputStats,
 } from "@/lib/svg-validator";
@@ -72,15 +73,19 @@ export async function POST(request: NextRequest) {
       // 2. Consolidate into compound paths with AI colour grouping
       const { svg: consolidated, layers } = await consolidateSVG(fixedSVG);
 
-      // 3. Validate the OUTPUT against cutting requirements
-      const validation = validateForCutting(consolidated);
+      // 3. Self-repair any remaining issues, then validate
+      const { svg: repaired, repairs } = repairSVG(consolidated);
+      const validation = validateForCutting(repaired);
 
       // 4. Build human-readable changelog
-      const changelog = buildChangelog(inputStats, consolidated, layers.length);
+      const changelog = [
+        ...buildChangelog(inputStats, repaired, layers.length),
+        ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
+      ];
 
       return NextResponse.json({
         success: true,
-        svg: consolidated,
+        svg: repaired,
         analysis: {
           description: "Uploaded SVG — consolidated into cut-ready compound paths.",
           originalType: "svg",
@@ -144,14 +149,31 @@ export async function POST(request: NextRequest) {
         pathCount: 1,
       }));
 
-      // Validate
-      const validation = validateForCutting(tracedSVG);
+      // Self-repair any remaining issues, then validate
+      const { svg: repairedSVG, repairs } = repairSVG(tracedSVG);
+      const validation = validateForCutting(repairedSVG);
+
+      // Update path/layer counts after repair
+      const finalFills = [
+        ...new Set(
+          [...repairedSVG.matchAll(/fill="([^"]+)"/g)]
+            .map((m) => m[1])
+            .filter((f) => f !== "none" && f !== "transparent")
+        ),
+      ];
+      const finalPaths = [...repairedSVG.matchAll(/<path /g)].length;
+      const finalLayers = finalFills.map((color) => ({
+        name: color === "#000000" ? "Design" : `Layer (${color})`,
+        color,
+        pathCount: 1,
+      }));
 
       const changelog = [
         {
           action: "consolidated" as const,
-          detail: `Traced raster image into ${tracedPaths} colour layer${tracedPaths !== 1 ? "s" : ""} preserving original colours.`,
+          detail: `Traced raster image into ${finalPaths} colour layer${finalPaths !== 1 ? "s" : ""} preserving original colours.`,
         },
+        ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
         ...(analysis.suggestions?.map((s: string) => ({
           action: "info" as const,
           detail: s,
@@ -160,13 +182,13 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        svg: tracedSVG,
+        svg: repairedSVG,
         analysis: {
           description: analysis.description ?? "Processed image",
           originalType: mimeType.split("/")[1],
-          colorCount: layers.length,
-          isMultiLayered: layers.length > 1,
-          layers,
+          colorCount: finalLayers.length,
+          isMultiLayered: finalLayers.length > 1,
+          layers: finalLayers,
           complexity: analysis.complexity,
         },
         validation,
