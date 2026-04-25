@@ -102,11 +102,11 @@ export async function traceImage(
     .toBuffer();
 
   // ── 2. Quantise to a generous palette ────────────────────────────
-  // Always capture enough colours from the image. The consolidator
-  // will merge similar ones later — this stage should be GENEROUS.
-  const paletteCount = Math.max(8, designColors * 2 + 2);
+  // Capture ALL meaningful colours. Err on the side of too many —
+  // we filter background and cluster later. 24 palette entries is
+  // enough to capture 5-8 real design colours plus anti-aliasing.
   const quantizedBuf = await sharp(preprocessed)
-    .png({ palette: true, colors: paletteCount })
+    .png({ palette: true, colors: 24 })
     .toBuffer();
 
   // ── 3. Read quantised pixels ───────────────────────────────────
@@ -131,9 +131,16 @@ export async function traceImage(
   const whiteRgb: [number, number, number] = [255, 255, 255];
   const BG_DISTANCE = 60;
 
+  const totalPixels = width * height;
+  const MIN_SHARE = 0.004; // ignore colours under 0.4% of pixels (AA noise)
+
   let foreground = [...counts.entries()]
-    .filter(([hex]) => colorDistance(hexToRgb(hex), whiteRgb) > BG_DISTANCE)
-    .sort((a, b) => b[1] - a[1]) // most pixels first
+    .filter(([hex, count]) => {
+      if (colorDistance(hexToRgb(hex), whiteRgb) <= BG_DISTANCE) return false;
+      if (count < totalPixels * MIN_SHARE) return false;
+      return true;
+    })
+    .sort((a, b) => b[1] - a[1])
     .map(([hex]) => hex);
 
   if (foreground.length === 0) {
@@ -141,9 +148,10 @@ export async function traceImage(
   }
 
   // ── 5b. Cluster only if there are too many distinct colours ─────
-  // Keep up to 8 distinct layers. Only cluster if quantisation
-  // produced more than that (unlikely with palette:8, but safety net).
-  const MAX_LAYERS = 8;
+  // Keep up to 10 layers. With 24-palette quantisation we may get
+  // many anti-aliasing shades — cluster those down while keeping
+  // the real design colours separate.
+  const MAX_LAYERS = 10;
   if (foreground.length > MAX_LAYERS) {
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
