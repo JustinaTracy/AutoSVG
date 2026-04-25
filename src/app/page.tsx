@@ -158,9 +158,20 @@ export default function Home() {
     reader.onload = (e) => setOriginalPreview(e.target?.result as string);
     reader.readAsDataURL(f);
 
+    // For large raster images, resize client-side before upload
+    // (Vercel has a ~4.5 MB body limit on serverless functions)
+    let uploadFile: File | Blob = f;
+    if (!isSvg && f.size > 3 * 1024 * 1024) {
+      try {
+        uploadFile = await resizeImageClientSide(f, 3000, 0.92);
+      } catch {
+        // If resize fails, try uploading the original
+      }
+    }
+
     // Upload
     const body = new FormData();
-    body.append("file", f);
+    body.append("file", uploadFile);
 
     try {
       const res = await fetch("/api/process", { method: "POST", body });
@@ -630,6 +641,48 @@ export default function Home() {
 /* ------------------------------------------------------------------ */
 /*  Small helpers                                                      */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Resize a raster image in the browser using Canvas before uploading.
+ * Keeps the aspect ratio and converts to PNG under the target size.
+ */
+function resizeImageClientSide(
+  file: File,
+  maxDim: number,
+  quality: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = maxDim / Math.max(width, height);
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Canvas toBlob failed"));
+        },
+        "image/png",
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Image load failed"));
+    };
+    img.src = url;
+  });
+}
 
 function StatusBanner({ validation }: { validation?: Validation }) {
   if (!validation) return null;

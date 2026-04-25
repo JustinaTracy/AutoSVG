@@ -11,8 +11,10 @@ import {
   extractInputStats,
 } from "@/lib/svg-validator";
 
-const MAX_RASTER_SIZE = 50 * 1024 * 1024; // 50 MB (we'll resize down)
-const MAX_SVG_SIZE = 10 * 1024 * 1024; // 10 MB
+export const maxDuration = 60; // seconds — tracing multiple colours takes time
+
+const MAX_RASTER_SIZE = 50 * 1024 * 1024;
+const MAX_SVG_SIZE = 10 * 1024 * 1024;
 
 export async function POST(request: NextRequest) {
   try {

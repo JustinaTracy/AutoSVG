@@ -126,21 +126,35 @@ export async function traceImage(
   }
 
   // ── 5. Strip background colours ─────────────────────────────────
-  // We always flatten to white, so the background is always near-white.
-  // The most-common colour that is near-white is the background.
+  // The background is the DOMINANT colour (most pixels). Also strip
+  // near-white and near-black (common image backgrounds) plus any
+  // colour close to the dominant.
   const whiteRgb: [number, number, number] = [255, 255, 255];
+  const blackRgb: [number, number, number] = [0, 0, 0];
   const BG_DISTANCE = 60;
 
   const totalPixels = width * height;
-  const MIN_SHARE = 0.004; // ignore colours under 0.4% of pixels (AA noise)
+  const MIN_SHARE = 0.004;
 
-  let foreground = [...counts.entries()]
+  // Find the dominant colour
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const dominantHex = sorted[0][0];
+  const dominantRgb = hexToRgb(dominantHex);
+
+  let foreground = sorted
     .filter(([hex, count]) => {
+      // Remove the dominant colour (background)
+      if (hex === dominantHex) return false;
+      // Remove colours close to the dominant
+      if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
+      // Remove near-white
       if (colorDistance(hexToRgb(hex), whiteRgb) <= BG_DISTANCE) return false;
+      // Remove near-black
+      if (colorDistance(hexToRgb(hex), blackRgb) <= BG_DISTANCE) return false;
+      // Remove anti-aliasing noise
       if (count < totalPixels * MIN_SHARE) return false;
       return true;
     })
-    .sort((a, b) => b[1] - a[1])
     .map(([hex]) => hex);
 
   if (foreground.length === 0) {
@@ -159,7 +173,7 @@ export async function traceImage(
   // ── 6. Per-colour mask → trace ─────────────────────────────────
   // Build a map of which quantized hex each foreground colour "owns".
   // After clustering, one representative may match multiple quantized colours.
-  const colorOwnership = buildColorOwnership(foreground, counts, whiteRgb, BG_DISTANCE);
+  const colorOwnership = buildColorOwnership(foreground, counts, dominantRgb, BG_DISTANCE);
 
   const pathElements: string[] = [];
 
