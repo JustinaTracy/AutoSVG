@@ -168,27 +168,32 @@ export async function analyzeLayerStrategy(
           },
           {
             type: "text",
-            text: `You are a vinyl cutting expert. I'm converting this image to layered vinyl cut files.
+            text: `You are a vinyl cutting expert advising how to layer this design.
 
-I detected these colours in the design: ${JSON.stringify(colors)}
+Detected colours: ${JSON.stringify(colors)}
 
-For vinyl cutting, layers STACK on top of each other on the surface. You cut each colour separately and apply them in order.
+VINYL LAYERING RULES:
+- Each colour is cut from a separate sheet of vinyl and stacked.
+- Bottom layers go down first, top layers are applied last.
+- A coloured shape (circle, heart, banner) that has TEXT or another colour ON TOP of it should be a SOLID shape — do NOT cut holes for the overlapping elements. The overlapping vinyl goes on top.
 
-For EACH colour, decide:
+For EACH colour decide:
 
-1. **role**: "fill" or "detail"
-   - "fill" = large solid shapes (coloured circles, banners, backgrounds). These should be CUT AS SOLID SHAPES with no holes from overlapping text. The text vinyl goes ON TOP.
-   - "detail" = text, lettering, outlines, thin features. These need their internal holes PRESERVED (like the inside of letters B, D, O, P, R, etc.).
+**role**: "fill" or "detail"
+- "fill" = ANY shape that has other elements sitting on top of it. Circles, hearts, petals, banners, backgrounds — these MUST be solid. Even if they have text or icons drawn on them, the shape itself should have NO interior cutouts. Examples: a red circle with text inside = "fill". Flower petals = "fill".
+- "detail" = text, lettering, outlines, or thin drawn features that are the TOPMOST layer and sit ON TOP of fill shapes. Only these need their letter counters preserved (inside of B, D, O, etc.).
 
-2. **fillHoles**: true if this colour's shapes should be solid (fill small interior gaps from overlapping layers). false if holes/counters must be kept.
+**fillHoles**: true for "fill" layers, false for "detail" layers.
 
-3. **order**: stacking order (1 = applied to surface first / bottom, higher = on top). Fill layers go first, detail layers go on top.
+**order**: 1 = bottom, higher = top. Fill layers first, detail layers last.
 
-4. **description**: brief label like "Red flower centers", "Dark brown text and outlines"
+**description**: e.g. "Red circle centers", "Dark text and outlines"
+
+IMPORTANT: When in doubt, choose "fill". The ONLY things that should be "detail" are text/lettering that sit on top of coloured shapes. Everything else is "fill".
 
 Return JSON: { "layers": [ { "color": "#hex", "role": "fill"|"detail", "fillHoles": true|false, "order": 1, "description": "..." } ] }
 
-Think about what makes this EASIEST for someone to cut and weed vinyl. Solid shapes are easier to weed than complex shapes with lots of interior cutouts.`,
+Return EVERY colour from the list above. Use the hex values EXACTLY as given.`,
           },
         ],
       },

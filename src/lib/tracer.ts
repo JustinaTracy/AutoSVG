@@ -193,9 +193,11 @@ export async function traceImage(
       foreground
     );
     for (const layer of aiLayers) {
-      strategies.set(layer.color, layer);
+      // Normalise hex for matching (AI may return different case)
+      strategies.set(layer.color.toLowerCase(), layer);
     }
-  } catch {
+  } catch (err) {
+    console.error("[tracer] AI layer strategy failed:", err);
     // AI unavailable — default everything to "detail" (safe, no holes filled)
   }
 
@@ -206,8 +208,11 @@ export async function traceImage(
 
   for (const color of foreground) {
     const ownedHexes = colorOwnership.get(color) ?? [color];
-    const strategy = strategies.get(color);
+    const strategy = strategies.get(color.toLowerCase());
     const prevCount = pathElements.length;
+    console.log(
+      `[tracer] ${color}: ${strategy ? strategy.role + (strategy.fillHoles ? " (fill holes)" : " (keep holes)") : "no strategy (default: detail)"} — ${strategy?.description ?? ""}`
+    );
 
     // Binary mask: any pixel matching one of the owned colours → black
     const mask = Buffer.alloc(width * height);
