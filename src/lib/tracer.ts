@@ -1,5 +1,24 @@
+/**
+ * Per-colour raster-to-SVG tracer
+ *
+ * Instead of using potrace's posterize (which converts to grayscale
+ * brightness levels and loses actual colours), this:
+ *
+ *  1. Quantises the image to N colours with sharp
+ *  2. Identifies and removes the background colour
+ *  3. Creates a binary mask for each foreground colour
+ *  4. Traces each mask individually with potrace
+ *  5. Assigns the original colour as the fill
+ *
+ * Result: filled compound paths with the real image colours.
+ */
+
 import sharp from "sharp";
 import potrace from "potrace";
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 function traceAsync(
   buffer: Buffer,
@@ -13,17 +32,52 @@ function traceAsync(
   });
 }
 
-function posterizeAsync(
-  buffer: Buffer,
-  options: potrace.PosterizeOptions
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    potrace.posterize(buffer, options, (err, svg) => {
-      if (err) reject(err);
-      else resolve(svg);
-    });
-  });
+const NAMED_COLORS: Record<string, string> = {
+  white: "#ffffff", black: "#000000", red: "#ff0000", green: "#008000",
+  blue: "#0000ff", yellow: "#ffff00", cyan: "#00ffff", magenta: "#ff00ff",
+  gray: "#808080", grey: "#808080", orange: "#ffa500", pink: "#ffc0cb",
+  purple: "#800080", brown: "#a52a2a", transparent: "#ffffff",
+};
+
+function hexToRgb(hex: string): [number, number, number] {
+  const mapped = NAMED_COLORS[hex.toLowerCase().trim()] ?? hex;
+  const h = mapped.replace("#", "");
+  if (h.length === 3)
+    return [
+      parseInt(h[0] + h[0], 16),
+      parseInt(h[1] + h[1], 16),
+      parseInt(h[2] + h[2], 16),
+    ];
+  return [
+    parseInt(h.substring(0, 2), 16) || 0,
+    parseInt(h.substring(2, 4), 16) || 0,
+    parseInt(h.substring(4, 6), 16) || 0,
+  ];
 }
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return (
+    "#" +
+    [r, g, b]
+      .map((v) =>
+        Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0")
+      )
+      .join("")
+  );
+}
+
+function colorDistance(
+  a: [number, number, number],
+  b: [number, number, number]
+): number {
+  return Math.sqrt(
+    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
 
 export interface TraceOptions {
   recommendedColors: number;
@@ -39,69 +93,205 @@ export async function traceImage(
     options.backgroundColor && options.backgroundColor !== "none"
       ? options.backgroundColor
       : "#ffffff";
+  const designColors = Math.max(1, Math.min(options.recommendedColors, 6));
 
-  // Preprocess: resize large images, flatten transparency, convert to PNG
-  const processed = await sharp(imageBuffer)
+  // ── 1. Preprocess ──────────────────────────────────────────────
+  const preprocessed = await sharp(imageBuffer)
     .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
     .flatten({ background: bgColor })
-    .normalize()
-    .png()
     .toBuffer();
 
-  const colors = Math.max(1, Math.min(options.recommendedColors, 4));
+  // ── 2. Quantise to a generous palette ────────────────────────────
+  // Always capture enough colours from the image. The consolidator
+  // will merge similar ones later — this stage should be GENEROUS.
+  const paletteCount = Math.max(8, designColors * 2 + 2);
+  const quantizedBuf = await sharp(preprocessed)
+    .png({ palette: true, colors: paletteCount })
+    .toBuffer();
 
-  if (colors <= 1) {
-    // Single-color trace — best for silhouettes, text, simple designs
-    const svg = await traceAsync(processed, {
-      threshold: options.threshold ?? 128,
-      color: "#000000",
-      background: "transparent",
-      turdSize: 50,
-      optTolerance: 0.4,
-    });
-    return cleanTracedSVG(svg);
+  // ── 3. Read quantised pixels ───────────────────────────────────
+  const { data, info } = await sharp(quantizedBuf)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  const { width, height } = info;
+  const ch = 4; // RGBA
+
+  // ── 4. Find unique colours + pixel counts ──────────────────────
+  const counts = new Map<string, number>();
+  for (let i = 0; i < data.length; i += ch) {
+    const hex = rgbToHex(data[i], data[i + 1], data[i + 2]);
+    counts.set(hex, (counts.get(hex) || 0) + 1);
   }
 
-  // Multi-color posterize
-  const svg = await posterizeAsync(processed, {
-    steps: colors,
-    color: "auto",
-    background: "transparent",
-    turdSize: 30,
-    optTolerance: 0.4,
+  // ── 5. Strip background colours ─────────────────────────────────
+  // We always flatten to white, so the background is always near-white.
+  // The most-common colour that is near-white is the background.
+  const whiteRgb: [number, number, number] = [255, 255, 255];
+  const BG_DISTANCE = 60;
+
+  let foreground = [...counts.entries()]
+    .filter(([hex]) => colorDistance(hexToRgb(hex), whiteRgb) > BG_DISTANCE)
+    .sort((a, b) => b[1] - a[1]) // most pixels first
+    .map(([hex]) => hex);
+
+  if (foreground.length === 0) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`;
+  }
+
+  // ── 5b. Cluster similar foreground colours to the target count ──
+  if (foreground.length > designColors) {
+    foreground = clusterForeground(foreground, counts, designColors);
+  }
+
+  // ── 6. Per-colour mask → trace ─────────────────────────────────
+  // Build a map of which quantized hex each foreground colour "owns".
+  // After clustering, one representative may match multiple quantized colours.
+  const colorOwnership = buildColorOwnership(foreground, counts, whiteRgb, BG_DISTANCE);
+
+  const pathElements: string[] = [];
+
+  for (const color of foreground) {
+    const ownedHexes = colorOwnership.get(color) ?? [color];
+
+    // Binary mask: any pixel matching one of the owned colours → black
+    const mask = Buffer.alloc(width * height);
+    for (let i = 0; i < data.length; i += ch) {
+      const pi = i / ch;
+      const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
+      mask[pi] = ownedHexes.includes(px) ? 0 : 255;
+    }
+
+    const maskPng = await sharp(mask, {
+      raw: { width, height, channels: 1 },
+    })
+      .png()
+      .toBuffer();
+
+    try {
+      const traced = await traceAsync(maskPng, {
+        threshold: 128,
+        color: color,
+        background: "transparent",
+        turdSize: 30,
+        optTolerance: 0.4,
+      });
+
+      // Pull <path> elements out of potrace's SVG
+      for (const m of traced.matchAll(/<path\b[^>]*>/gi)) {
+        let p = m[0];
+
+        // Ensure fill-rule="evenodd" (holes inside letters, etc.)
+        if (!/fill-rule/.test(p)) {
+          p = p.replace("<path", '<path fill-rule="evenodd"');
+        }
+
+        // Force the correct fill colour
+        if (/fill="/.test(p)) {
+          p = p.replace(/fill="[^"]*"/, `fill="${color}"`);
+        } else {
+          p = p.replace("<path", `<path fill="${color}"`);
+        }
+
+        pathElements.push(p);
+      }
+    } catch {
+      // Skip colour if tracing fails
+    }
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Foreground colour clustering                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Merge the closest foreground colours until we reach `target` count.
+ * Returns the representative hex for each surviving cluster.
+ */
+function clusterForeground(
+  colors: string[],
+  pixelCounts: Map<string, number>,
+  target: number
+): string[] {
+  let clusters = colors.map((c) => ({
+    members: [c],
+    rgb: hexToRgb(c),
+    pixels: pixelCounts.get(c) ?? 0,
+  }));
+
+  while (clusters.length > target) {
+    let minDist = Infinity;
+    let mi = 0;
+    let mj = 1;
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const d = colorDistance(clusters[i].rgb, clusters[j].rgb);
+        if (d < minDist) {
+          minDist = d;
+          mi = i;
+          mj = j;
+        }
+      }
+    }
+    const a = clusters[mi];
+    const b = clusters[mj];
+    const total = a.pixels + b.pixels;
+    const wa = a.pixels / total;
+    const wb = b.pixels / total;
+    a.members.push(...b.members);
+    a.rgb = [
+      a.rgb[0] * wa + b.rgb[0] * wb,
+      a.rgb[1] * wa + b.rgb[1] * wb,
+      a.rgb[2] * wa + b.rgb[2] * wb,
+    ];
+    a.pixels = total;
+    clusters.splice(mj, 1);
+  }
+
+  // Return the most-common member as the representative
+  return clusters.map((cl) => {
+    const sorted = [...cl.members].sort(
+      (a, b) => (pixelCounts.get(b) ?? 0) - (pixelCounts.get(a) ?? 0)
+    );
+    return sorted[0];
   });
-  return cleanTracedSVG(svg);
 }
 
 /**
- * Clean up potrace output for cutting machines:
- * - Ensure fill-rule="evenodd" so inner contours cut as holes
- * - Ensure all paths are closed
- * - Add proper SVG namespace
+ * Build a map: representative colour → list of quantized hex values it owns.
+ * Colours not in the foreground list (background, near-bg) are unowned.
  */
-function cleanTracedSVG(svg: string): string {
-  // Ensure xmlns is present
-  if (!svg.includes("xmlns=")) {
-    svg = svg.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+function buildColorOwnership(
+  representatives: string[],
+  pixelCounts: Map<string, number>,
+  bgRgb: [number, number, number],
+  bgThreshold: number
+): Map<string, string[]> {
+  const ownership = new Map<string, string[]>();
+  for (const rep of representatives) {
+    ownership.set(rep, []);
   }
 
-  // Ensure evenodd fill-rule on all paths (potrace subpaths rely on it)
-  svg = svg.replace(
-    /<path\b(?![^>]*fill-rule)/gi,
-    '<path fill-rule="evenodd"'
-  );
+  // Assign every quantized colour to its nearest representative
+  for (const hex of pixelCounts.keys()) {
+    // Skip background colours
+    if (colorDistance(hexToRgb(hex), bgRgb) <= bgThreshold) continue;
 
-  // Close any open paths
-  svg = svg.replace(
-    /(<path[^>]*\bd=")((?:(?!")\S|\s)*?)(")/g,
-    (_match, before, pathData, after) => {
-      const trimmed = pathData.trim();
-      if (trimmed && !/[zZ]\s*$/.test(trimmed)) {
-        return `${before}${trimmed} Z${after}`;
+    let bestRep = representatives[0];
+    let bestDist = Infinity;
+    for (const rep of representatives) {
+      const d = colorDistance(hexToRgb(hex), hexToRgb(rep));
+      if (d < bestDist) {
+        bestDist = d;
+        bestRep = rep;
       }
-      return `${before}${trimmed}${after}`;
     }
-  );
+    ownership.get(bestRep)!.push(hex);
+  }
 
-  return svg;
+  return ownership;
 }

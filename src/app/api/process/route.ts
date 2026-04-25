@@ -119,25 +119,38 @@ export async function POST(request: NextRequest) {
         };
       }
 
-      // Trace
+      // Trace — the tracer already quantises to real image colours,
+      // creates per-colour masks, and traces each separately.
+      // The output is already clean: one <path> per colour, correct
+      // fills, fill-rule="evenodd".  No consolidation needed.
       const tracedSVG = await traceImage(buffer, {
         recommendedColors: analysis.recommendedColors ?? 2,
         threshold: analysis.threshold,
         backgroundColor: analysis.backgroundColor,
       });
 
-      // Consolidate
-      const { svg: consolidated, layers } = await consolidateSVG(tracedSVG);
-      const finalSVG = layers.length > 0 ? consolidated : optimizeSVG(tracedSVG);
+      // Build layer info from the traced paths
+      const tracedFills = [
+        ...new Set(
+          [...tracedSVG.matchAll(/fill="([^"]+)"/g)]
+            .map((m) => m[1])
+            .filter((f) => f !== "none" && f !== "transparent")
+        ),
+      ];
+      const tracedPaths = [...tracedSVG.matchAll(/<path /g)].length;
+      const layers = tracedFills.map((color) => ({
+        name: color === "#000000" ? "Design" : `Layer (${color})`,
+        color,
+        pathCount: 1,
+      }));
 
       // Validate
-      const validation = validateForCutting(finalSVG);
+      const validation = validateForCutting(tracedSVG);
 
-      // Changelog for raster is simpler — describe the conversion
       const changelog = [
         {
           action: "consolidated" as const,
-          detail: `Traced raster image into ${layers.length || 1} vector layer${(layers.length || 1) !== 1 ? "s" : ""} with AI-optimised settings.`,
+          detail: `Traced raster image into ${tracedPaths} colour layer${tracedPaths !== 1 ? "s" : ""} preserving original colours.`,
         },
         ...(analysis.suggestions?.map((s: string) => ({
           action: "info" as const,
@@ -147,14 +160,13 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        svg: finalSVG,
+        svg: tracedSVG,
         analysis: {
           description: analysis.description ?? "Processed image",
           originalType: mimeType.split("/")[1],
-          colorCount: layers.length || (analysis.recommendedColors ?? 2),
-          isMultiLayered:
-            (layers.length || (analysis.recommendedColors ?? 2)) > 1,
-          layers: layers.length > 0 ? layers : undefined,
+          colorCount: layers.length,
+          isMultiLayered: layers.length > 1,
+          layers,
           complexity: analysis.complexity,
         },
         validation,
