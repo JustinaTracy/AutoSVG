@@ -162,16 +162,25 @@ export async function traceImage(
 
   // ── 5a. Silhouette trace ──────────────────────────────────────
   // Separate trace: ALL non-background pixels as one solid shape.
-  // This gives a clean single outline with no gaps between colours.
+  // Uses a TIGHT threshold — only the exact dominant colour (and very
+  // close shades) counts as background. Everything else is foreground.
+  // This ensures light interior areas (eyes, highlights) are NOT cut
+  // out as holes — the silhouette is a solid filled outline.
   let silhouetteSVG: string | undefined;
   if (foreground.length > 1) {
+    const SIL_BG_DIST = 25; // much tighter than the colour-layer BG_DISTANCE
     const silMask = Buffer.alloc(width * height);
     for (let i = 0; i < data.length; i += ch) {
-      const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
-      const dist = colorDistance(hexToRgb(px), dominantRgb);
-      silMask[i / ch] = dist > BG_DISTANCE ? 0 : 255; // 0=black=foreground
+      const dist = colorDistance(
+        [data[i], data[i + 1], data[i + 2]],
+        dominantRgb
+      );
+      silMask[i / ch] = dist > SIL_BG_DIST ? 0 : 255;
     }
+    // Light blur to close tiny gaps between the design and background
     const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
+      .blur(2)
+      .threshold(128)
       .png()
       .toBuffer();
     try {
@@ -179,14 +188,15 @@ export async function traceImage(
         threshold: 128,
         color: "#000000",
         background: "transparent",
-        turdSize: 100,
+        turdSize: 150,
         optTolerance: 2.0,
       });
-      // Extract path and build clean SVG
       const silPaths: string[] = [];
       for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
         let p = m[0];
-        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
+        // Use nonzero fill — we want a completely solid shape, NO holes
+        p = p.replace(/fill-rule="[^"]*"/g, "");
+        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="nonzero"');
         if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
         const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
         if (dAttr.length < 50) continue;
