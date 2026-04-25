@@ -88,6 +88,7 @@ export interface TraceOptions {
 
 export interface TraceResult {
   svg: string;
+  silhouetteSVG?: string;
   description: string;
 }
 
@@ -148,11 +149,8 @@ export async function traceImage(
 
   let foreground = sorted
     .filter(([hex, count]) => {
-      // Remove the dominant colour (background)
       if (hex === dominantHex) return false;
-      // Remove colours close to the dominant
       if (colorDistance(hexToRgb(hex), dominantRgb) <= BG_DISTANCE) return false;
-      // Remove anti-aliasing noise (< 0.4% of pixels)
       if (count < totalPixels * MIN_SHARE) return false;
       return true;
     })
@@ -160,6 +158,47 @@ export async function traceImage(
 
   if (foreground.length === 0) {
     return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"></svg>`, description: "" };
+  }
+
+  // ── 5a. Silhouette trace ──────────────────────────────────────
+  // Separate trace: ALL non-background pixels as one solid shape.
+  // This gives a clean single outline with no gaps between colours.
+  let silhouetteSVG: string | undefined;
+  if (foreground.length > 1) {
+    const silMask = Buffer.alloc(width * height);
+    for (let i = 0; i < data.length; i += ch) {
+      const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
+      const dist = colorDistance(hexToRgb(px), dominantRgb);
+      silMask[i / ch] = dist > BG_DISTANCE ? 0 : 255; // 0=black=foreground
+    }
+    const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
+      .png()
+      .toBuffer();
+    try {
+      const silTraced = await traceAsync(silPng, {
+        threshold: 128,
+        color: "#000000",
+        background: "transparent",
+        turdSize: 100,
+        optTolerance: 2.0,
+      });
+      // Extract path and build clean SVG
+      const silPaths: string[] = [];
+      for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
+        let p = m[0];
+        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
+        if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
+        const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
+        if (dAttr.length < 50) continue;
+        silPaths.push(p);
+      }
+      if (silPaths.length > 0) {
+        const silTrimmed = trimViewBox(silPaths, width, height);
+        silhouetteSVG = silTrimmed;
+      }
+    } catch {
+      // Silhouette trace failed — skip it
+    }
   }
 
   // ── 5b. Merge near-duplicate colours + cap at max layers ────────
@@ -298,11 +337,11 @@ export async function traceImage(
     );
 
     const trimmed = trimViewBox(cleaned, width, height);
-    return { svg: trimmed, description: imageDescription };
+    return { svg: trimmed, silhouetteSVG, description: imageDescription };
   }
 
   const trimmed = trimViewBox(pathElements, width, height);
-  return { svg: trimmed, description: imageDescription };
+  return { svg: trimmed, silhouetteSVG, description: imageDescription };
 }
 
 /**

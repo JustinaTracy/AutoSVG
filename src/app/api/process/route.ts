@@ -139,24 +139,10 @@ export async function POST(request: NextRequest) {
         ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
       ];
 
-      // Generate silhouette version for multi-colour designs:
-      // merge all paths into one black compound path
-      let silhouetteSVG: string | undefined;
-      if (finalLayers.length > 1) {
-        const allD = [...repairedSVG.matchAll(/\bd="([^"]+)"/g)]
-          .map((m) => m[1])
-          .join(" ");
-        const vb = repairedSVG.match(/viewBox="([^"]*)"/)?.[1] ?? "0 0 100 100";
-        silhouetteSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}"><path d="${allD}" fill="#000000" fill-rule="evenodd"/></svg>`;
-        // Repair the silhouette too
-        const { svg: repairedSil } = repairSVG(silhouetteSVG);
-        silhouetteSVG = repairedSil;
-      }
-
       return NextResponse.json({
         success: true,
         svg: repairedSVG,
-        silhouetteSVG,
+        silhouetteSVG: traceResult.silhouetteSVG,
         analysis: {
           description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],
