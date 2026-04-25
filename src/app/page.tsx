@@ -77,6 +77,7 @@ interface ProcessResult {
   success: boolean;
   svg: string;
   silhouetteSVG?: string;
+  simplifiedSVG?: string;
   analysis: Analysis;
   validation?: Validation;
   changelog?: ChangelogEntry[];
@@ -109,7 +110,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
-  const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
+  const [outputMode, setOutputMode] = useState<"color" | "simplified" | "silhouette">("color");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -127,7 +128,9 @@ export default function Home() {
   const activeSVG =
     outputMode === "silhouette" && result?.silhouetteSVG
       ? result.silhouetteSVG
-      : result?.svg ?? "";
+      : outputMode === "simplified" && result?.simplifiedSVG
+        ? result.simplifiedSVG
+        : result?.svg ?? "";
 
   const svgBlobUrl = useMemo(() => {
     if (!activeSVG) return "";
@@ -234,7 +237,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const suffix = outputMode === "silhouette" ? "_silhouette" : "_cut-ready";
+    const suffix = outputMode === "silhouette" ? "_silhouette" : outputMode === "simplified" ? "_simplified" : "_cut-ready";
     a.download = `${file.name.replace(/\.[^.]+$/, "")}${suffix}.svg`;
     a.click();
     URL.revokeObjectURL(url);
@@ -438,12 +441,12 @@ export default function Home() {
                     )}
                   </div>
 
-                  {/* Full Color / Silhouette toggle */}
-                  {result.silhouetteSVG && (
+                  {/* Output mode toggle */}
+                  {(result.silhouetteSVG || result.simplifiedSVG) && (
                     <div className="mt-3 flex rounded-full border border-neutral-200 bg-neutral-100 p-0.5">
                       <button
                         onClick={() => setOutputMode("color")}
-                        className={`flex-1 rounded-full px-4 py-1.5 font-body text-sm font-medium transition-colors ${
+                        className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
                           outputMode === "color"
                             ? "bg-plum-wine-700 text-white shadow-sm"
                             : "text-plum-wine-600 hover:text-plum-wine-800"
@@ -451,16 +454,30 @@ export default function Home() {
                       >
                         Full Color
                       </button>
-                      <button
-                        onClick={() => setOutputMode("silhouette")}
-                        className={`flex-1 rounded-full px-4 py-1.5 font-body text-sm font-medium transition-colors ${
-                          outputMode === "silhouette"
-                            ? "bg-plum-wine-700 text-white shadow-sm"
-                            : "text-plum-wine-600 hover:text-plum-wine-800"
-                        }`}
-                      >
-                        Silhouette
-                      </button>
+                      {result.simplifiedSVG && (
+                        <button
+                          onClick={() => setOutputMode("simplified")}
+                          className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
+                            outputMode === "simplified"
+                              ? "bg-plum-wine-700 text-white shadow-sm"
+                              : "text-plum-wine-600 hover:text-plum-wine-800"
+                          }`}
+                        >
+                          Simplified
+                        </button>
+                      )}
+                      {result.silhouetteSVG && (
+                        <button
+                          onClick={() => setOutputMode("silhouette")}
+                          className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
+                            outputMode === "silhouette"
+                              ? "bg-plum-wine-700 text-white shadow-sm"
+                              : "text-plum-wine-600 hover:text-plum-wine-800"
+                          }`}
+                        >
+                          Silhouette
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

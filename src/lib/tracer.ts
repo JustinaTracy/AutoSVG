@@ -89,6 +89,7 @@ export interface TraceOptions {
 export interface TraceResult {
   svg: string;
   silhouetteSVG?: string;
+  simplifiedSVG?: string;
   description: string;
 }
 
@@ -307,6 +308,93 @@ export async function traceImage(
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
+  // ── 5c. Simplified trace ────────────────────────────────────────
+  // Takes the silhouette boundary and splits it into coloured regions.
+  // Every pixel inside the silhouette is assigned to its nearest
+  // simplified colour → no gaps between colours, clean tiling.
+  // Only generated when there are 3+ distinct foreground colours
+  // (otherwise it would look identical to the silhouette).
+  let simplifiedSVG: string | undefined;
+  if (foreground.length >= 3 && silhouetteSVG) {
+    try {
+      // Reduce to 3-5 colours for the simplified palette
+      const SIM_MAX = Math.min(5, foreground.length);
+      const simColors =
+        foreground.length > SIM_MAX
+          ? clusterForeground(foreground, counts, SIM_MAX)
+          : [...foreground];
+
+      // For each pixel inside the silhouette, assign to nearest sim colour
+      const simMasks = new Map<string, Buffer>();
+      for (const c of simColors) {
+        simMasks.set(c, Buffer.alloc(width * height, 255)); // start all white
+      }
+
+      for (let i = 0; i < data.length; i += ch) {
+        const pi = i / ch;
+        // Must be inside the silhouette
+        const isForeground = hasAlpha
+          ? alphaMask[pi] === 1
+          : (() => {
+              // For non-alpha: pixel is foreground if NOT close to edge bg
+              const px = rgbToHex(data[i], data[i + 1], data[i + 2]);
+              // Quick check: was this pixel counted in foreground colours?
+              return counts.has(px);
+            })();
+        if (!isForeground) continue;
+
+        // Find nearest simplified colour
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let bestColor = simColors[0];
+        let bestDist = Infinity;
+        for (const sc of simColors) {
+          const [sr, sg, sb] = hexToRgb(sc);
+          const d = (r - sr) ** 2 + (g - sg) ** 2 + (b - sb) ** 2;
+          if (d < bestDist) {
+            bestDist = d;
+            bestColor = sc;
+          }
+        }
+        simMasks.get(bestColor)![pi] = 0; // black = this colour
+      }
+
+      // Trace each simplified colour mask
+      const simPaths: string[] = [];
+      for (const color of simColors) {
+        const mask = simMasks.get(color)!;
+        const maskPng = await sharp(mask, {
+          raw: { width, height, channels: 1 },
+        })
+          .png()
+          .toBuffer();
+
+        const traced = await traceAsync(maskPng, {
+          threshold: 128,
+          color,
+          background: "transparent",
+          turdSize: 100,
+          optTolerance: 2.0,
+        });
+
+        for (const m of traced.matchAll(/<path\b[^>]*>/gi)) {
+          let p = m[0];
+          if (!/fill-rule/.test(p))
+            p = p.replace("<path", '<path fill-rule="evenodd"');
+          if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, `fill="${color}"`);
+          const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
+          if (dAttr.length < 50) continue;
+          simPaths.push(p);
+        }
+      }
+
+      if (simPaths.length > 0) {
+        simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
+      }
+    } catch {
+      // Simplified trace failed — skip it
+    }
+  }
+
   // ── 6. AI layer strategy ────────────────────────────────────────
   // Ask GPT-4o to look at the image and decide per-colour: is this a
   // solid fill layer (holes filled) or a detail layer (holes preserved)?
@@ -439,7 +527,7 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, simplifiedSVG, description: imageDescription };
   }
 
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
