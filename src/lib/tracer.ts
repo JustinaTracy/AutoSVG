@@ -302,8 +302,8 @@ export async function traceImage(
         silPaths.push(p);
       }
       if (silPaths.length > 0) {
-        const silTrimmed = trimViewBox(silPaths, width, height);
-        silhouetteSVG = silTrimmed;
+        // Use same viewBox as full color so toggling doesn't jump
+        silhouetteSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${silPaths.join("\n")}\n</svg>`;
       }
     } catch {
       // Silhouette trace failed — skip it
