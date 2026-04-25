@@ -199,15 +199,20 @@ export async function traceImage(
         threshold: 128,
         color: color,
         background: "transparent",
-        turdSize: 30,
-        optTolerance: 0.4,
+        // turdSize: suppress contours smaller than this many pixels.
+        // Higher = fewer tiny debris fragments.
+        turdSize: 100,
+        // optTolerance: curve-fitting tolerance. Higher = smoother
+        // paths with fewer nodes (less jagged). 0.4 is potrace default,
+        // 1.2 gives good smooth curves for cutting machines.
+        optTolerance: 1.2,
       });
 
       // Pull <path> elements out of potrace's SVG
       for (const m of traced.matchAll(/<path\b[^>]*>/gi)) {
         let p = m[0];
 
-        // Ensure fill-rule="evenodd" (holes inside letters, etc.)
+        // Ensure fill-rule="evenodd"
         if (!/fill-rule/.test(p)) {
           p = p.replace("<path", '<path fill-rule="evenodd"');
         }
@@ -219,7 +224,7 @@ export async function traceImage(
           p = p.replace("<path", `<path fill="${color}"`);
         }
 
-        // Close any open subpaths (potrace sometimes omits trailing Z)
+        // Close any open subpaths
         p = p.replace(/\bd="([^"]*)"/, (_m, d) => {
           const trimmed = d.trim();
           if (trimmed && !/[zZ]\s*$/.test(trimmed)) {
@@ -228,15 +233,34 @@ export async function traceImage(
           return `d="${trimmed}"`;
         });
 
-        // Skip empty paths
+        // Skip empty or debris paths (very short path data = tiny fragments)
         const dAttr = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
         if (!dAttr.trim() || !/[MLCSQTAmlcsqta]/.test(dAttr)) continue;
+        if (dAttr.length < 50) continue; // debris: path data too short to be real
 
         pathElements.push(p);
       }
     } catch {
       // Skip colour if tracing fails
     }
+  }
+
+  // ── 7. Remove debris layers ──────────────────────────────────────
+  // If a traced layer has very little path data compared to the
+  // largest layer, it's likely anti-aliasing debris — drop it.
+  if (pathElements.length > 1) {
+    const pathSizes = pathElements.map((p) => {
+      const d = p.match(/\bd="([^"]*)"/)?.[1] ?? "";
+      return d.length;
+    });
+    const maxSize = Math.max(...pathSizes);
+    const MIN_RATIO = 0.02; // must be at least 2% of the largest layer
+
+    const cleaned = pathElements.filter((_, i) => {
+      return pathSizes[i] >= maxSize * MIN_RATIO;
+    });
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`;
   }
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`;
