@@ -142,7 +142,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         svg: repairedSVG,
-        silhouetteSVG: traceResult.silhouetteSVG,
+        // Only offer silhouette when there are multiple colour layers
+        silhouetteSVG: finalLayers.length > 1 ? traceResult.silhouetteSVG : undefined,
         analysis: {
           description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],

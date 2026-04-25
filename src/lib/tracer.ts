@@ -165,9 +165,10 @@ export async function traceImage(
   if (hasAlpha) {
     // Alpha image: every colour in `counts` is already foreground
     // (we skipped transparent pixels above). Just filter noise.
-    foreground = [...counts.entries()]
-      .filter(([, count]) => count >= opaqueCount * MIN_SHARE)
-      .sort((a, b) => b[1] - a[1])
+    const alphaEntries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const largestAlpha = alphaEntries[0]?.[1] ?? 1;
+    foreground = alphaEntries
+      .filter(([, count]) => count >= largestAlpha * 0.01)
       .map(([hex]) => hex);
   } else {
     // No alpha: detect background from EDGE pixels (borders of the image).
@@ -199,14 +200,21 @@ export async function traceImage(
     const bgHex = edgeSorted[0]?.[0] ?? "#ffffff";
     const bgRgb = hexToRgb(bgHex);
 
-    foreground = [...counts.entries()]
-      .filter(([hex, count]) => {
+    // First pass: remove background colours
+    const fgEntries = [...counts.entries()]
+      .filter(([hex]) => {
         if (hex === bgHex) return false;
         if (colorDistance(hexToRgb(hex), bgRgb) <= BG_DISTANCE) return false;
-        if (count < totalPixels * MIN_SHARE) return false;
         return true;
       })
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1] - a[1]);
+
+    // Second pass: filter noise relative to LARGEST foreground colour.
+    // This keeps small but important features (daisy centres at 0.2%
+    // total are 2% of the main black at 10% → significant).
+    const largestFG = fgEntries[0]?.[1] ?? 1;
+    foreground = fgEntries
+      .filter(([, count]) => count >= largestFG * 0.01) // 1% of largest fg
       .map(([hex]) => hex);
   }
 
@@ -551,10 +559,13 @@ function absorbSatellites(
 
     const nearestCount = pixelCounts.get(nearestLarger) ?? 0;
 
-    // If this colour has < 10% of the nearest larger colour's pixels,
-    // it's a satellite — absorb it (don't keep it as a separate layer)
-    if (myCount < nearestCount * 0.1) {
-      continue; // absorbed
+    // Only absorb if BOTH conditions are true:
+    // 1. Has < 10% of the nearest larger colour's pixels (small)
+    // 2. Is close in colour (distance < 150) — i.e. it's anti-aliasing
+    // If it's far away in colour space, it's a genuinely different
+    // colour that just happens to have few pixels (e.g. daisy centres).
+    if (myCount < nearestCount * 0.1 && nearestDist < 150) {
+      continue; // absorbed (anti-aliasing)
     }
 
     keep.add(sorted[i]);
