@@ -251,13 +251,17 @@ export async function traceImage(
     }
   }
 
-  // ── 5b. Merge near-duplicate colours + cap at max layers ────────
-  // First: merge any colours closer than MIN_COLOR_DIST — these are
-  // anti-aliasing shades that should be the same layer.
+  // ── 5b. Merge near-duplicate colours + absorb satellites ────────
+  // 1) Merge colours closer than MIN_COLOR_DIST
   const MIN_COLOR_DIST = 35;
   foreground = mergeNearDuplicates(foreground, counts, MIN_COLOR_DIST);
 
-  // Then: cluster down to max if still too many
+  // 2) Absorb "satellite" colours: if a colour has < 10% the pixels
+  //    of its nearest larger neighbour, it's anti-aliasing noise.
+  //    E.g. #3a3a3a (AA between black and white) gets absorbed into #000000.
+  foreground = absorbSatellites(foreground, counts);
+
+  // 3) Cluster down to max if still too many
   const MAX_LAYERS = 10;
   if (foreground.length > MAX_LAYERS) {
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
@@ -482,6 +486,55 @@ function mergeNearDuplicates(
   }
 
   return result;
+}
+
+/**
+ * Absorb small "satellite" colours into their nearest larger neighbour.
+ * A satellite is a colour with < 10% the pixels of the nearest colour
+ * that has MORE pixels. These are typically anti-aliasing artifacts
+ * (e.g. #3a3a3a between black text and white background).
+ */
+function absorbSatellites(
+  colors: string[],
+  pixelCounts: Map<string, number>
+): string[] {
+  if (colors.length <= 1) return colors;
+
+  // Sort by pixel count descending
+  const sorted = [...colors].sort(
+    (a, b) => (pixelCounts.get(b) ?? 0) - (pixelCounts.get(a) ?? 0)
+  );
+
+  const keep = new Set<string>();
+  keep.add(sorted[0]); // largest always stays
+
+  for (let i = 1; i < sorted.length; i++) {
+    const myCount = pixelCounts.get(sorted[i]) ?? 0;
+
+    // Find the nearest colour that is LARGER than this one
+    let nearestLarger = sorted[0];
+    let nearestDist = Infinity;
+    for (const bigger of keep) {
+      const d = colorDistance(hexToRgb(sorted[i]), hexToRgb(bigger));
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestLarger = bigger;
+      }
+    }
+
+    const nearestCount = pixelCounts.get(nearestLarger) ?? 0;
+
+    // If this colour has < 10% of the nearest larger colour's pixels,
+    // it's a satellite — absorb it (don't keep it as a separate layer)
+    if (myCount < nearestCount * 0.1) {
+      continue; // absorbed
+    }
+
+    keep.add(sorted[i]);
+  }
+
+  // Preserve the original order
+  return colors.filter((c) => keep.has(c));
 }
 
 /**

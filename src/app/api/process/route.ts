@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
       ];
       const finalPaths = [...repairedSVG.matchAll(/<path /g)].length;
       const finalLayers = finalFills.map((color) => ({
-        name: color === "#000000" ? "Design" : `Layer (${color})`,
+        name: `Layer (${color})`,
         color,
         pathCount: 1,
       }));
