@@ -280,9 +280,14 @@ export async function traceImage(
     // No blur — the silhouette should be a clean, accurate trace of
     // exactly what's in the mask. Any smoothing happens in potrace
     // via optTolerance, not by blurring the mask.
-    const silPng = await sharp(silMask, { raw: { width, height, channels: 1 } })
-      .png()
-      .toBuffer();
+    // Median filter for alpha images: fills tiny transparent details
+    // (bow highlights, eye sparkles, stitch marks) without affecting
+    // large structural holes (circle interiors, letter counters).
+    // Median is a majority-vote filter, NOT a blur — edges stay sharp.
+    const silSharp = sharp(silMask, { raw: { width, height, channels: 1 } });
+    const silPng = reallyHasAlpha
+      ? await silSharp.median(5).png().toBuffer()
+      : await silSharp.png().toBuffer();
     try {
       const silTraced = await traceAsync(silPng, {
         threshold: 128,
@@ -294,11 +299,10 @@ export async function traceImage(
       const silPaths: string[] = [];
       for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
         let p = m[0];
-        // Silhouette = solid shape. nonzero fills everything — no eye
-        // holes, no letter counter cutouts. Just the outline, filled.
-        // (Simplified mode handles internal detail with evenodd.)
-        p = p.replace(/fill-rule="[^"]*"/g, "");
-        p = p.replace("<path", '<path fill-rule="nonzero"');
+        // evenodd preserves real structural holes (circle interiors,
+        // letter counters). Tiny transparent details (bow highlights,
+        // eye sparkles) are removed by the median filter on the mask.
+        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
         if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
         silPaths.push(p);
       }
