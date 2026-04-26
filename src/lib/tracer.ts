@@ -345,6 +345,7 @@ export async function traceImage(
   let simplifiedLayers: Array<{ name: string; color: string; pathCount: number }> = [];
   if (silhouetteSVG) {
     try {
+      console.log(`[simplified] Starting — foreground: ${foreground.length} colours, silhouette exists: ${!!silhouetteSVG}`);
       // Get all subpaths from silhouette
       const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
       const subpaths = splitSubpaths(silD);
@@ -405,6 +406,7 @@ export async function traceImage(
 
       const fillIslands = islands.filter((i) => !i.isHole);
       const holeIslands = islands.filter((i) => i.isHole);
+      console.log(`[simplified] Islands: ${islands.length} total, ${fillIslands.length} fills, ${holeIslands.length} holes`);
 
       if (fillIslands.length >= 2) {
         // Ask AI to assign colours intelligently — it understands
@@ -435,8 +437,10 @@ export async function traceImage(
               islands[a.index].color = a.color.toLowerCase();
             }
           }
-        } catch {
-          // AI failed — keep the pixel-sampled colours (still reasonable)
+          console.log(`[simplified] AI assigned ${assignments.length} islands`);
+        } catch (err) {
+          console.error("[simplified] AI island colouring failed:", err);
+          // AI failed — keep the pixel-sampled colours
         }
         // Assign each hole to its nearest fill island (the one that "owns" it)
         for (const hole of holeIslands) {
