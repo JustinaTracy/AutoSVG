@@ -229,6 +229,76 @@ export async function analyzeLayerStrategyWithRetry(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Simplified: AI island colouring                                    */
+/* ------------------------------------------------------------------ */
+
+export interface IslandColorAssignment {
+  index: number;
+  color: string;
+}
+
+/**
+ * Ask GPT-4o to look at the image and assign colours to silhouette
+ * islands for the "Simplified" mode. The AI understands context —
+ * it knows "DAYS" is one word, "Smarter" is another, and different
+ * characters can have different colours.
+ */
+export async function assignIslandColors(
+  imageBase64: string,
+  mimeType: string,
+  islands: Array<{ index: number; cx: number; cy: number; isHole: boolean }>,
+  availableColors: string[]
+): Promise<IslandColorAssignment[]> {
+  const fillIslands = islands.filter((i) => !i.isHole);
+  if (fillIslands.length === 0) return [];
+
+  const islandList = fillIslands
+    .map((i) => `#${i.index} at (${i.cx}, ${i.cy})`)
+    .join(", ");
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:${mimeType};base64,${imageBase64}`,
+              detail: "low",
+            },
+          },
+          {
+            type: "text",
+            text: `I've broken this design into separate vector islands (pieces) for a simplified vinyl cut version. Each island is a shape at a position in the image.
+
+Islands (fill pieces only): ${islandList}
+
+Available colours from the original: ${JSON.stringify(availableColors)}
+
+Assign each island a colour from the available list. RULES:
+- All letters in the SAME WORD must be the same colour
+- All parts of the same visual element must be the same colour
+- Match colours to what that area looks like in the original image
+- Use the available colours only
+
+Return JSON: { "assignments": [ { "index": 0, "color": "#hex" }, ... ] }
+
+Return an assignment for EVERY island index listed above.`,
+          },
+        ],
+      },
+    ],
+    max_tokens: 800,
+  });
+
+  const data = JSON.parse(response.choices[0].message.content || "{}");
+  return data.assignments ?? [];
+}
+
+/* ------------------------------------------------------------------ */
 /*  SVG cuttability analysis                                           */
 /* ------------------------------------------------------------------ */
 

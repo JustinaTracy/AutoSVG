@@ -15,7 +15,7 @@
 
 import sharp from "sharp";
 import potrace from "potrace";
-import { analyzeLayerStrategyWithRetry, type LayerStrategy } from "./openai";
+import { analyzeLayerStrategyWithRetry, assignIslandColors, type LayerStrategy } from "./openai";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -406,61 +406,37 @@ export async function traceImage(
       const fillIslands = islands.filter((i) => !i.isHole);
       const holeIslands = islands.filter((i) => i.isHole);
 
-      // Group nearby fill islands into "words" and unify colour.
-      // Islands on the same horizontal line with close X are a word.
-      // Each word gets the majority colour of its members.
       if (fillIslands.length >= 2) {
-        const LINE_THRESH = height * 0.08; // same line if Y within 8%
-        const WORD_GAP = width * 0.06;     // same word if X gap < 6%
+        // Ask AI to assign colours intelligently — it understands
+        // which islands form words, which are separate elements, etc.
+        try {
+          const thumbBuf = await sharp(preprocessed)
+            .resize(600, 600, { fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 60 })
+            .toBuffer();
 
-        // 1. Sort by Y then X
-        const sorted = [...fillIslands].sort(
-          (a, b) => a.cy - b.cy || a.cx - b.cx
-        );
+          const islandPositions = islands.map((isl, idx) => ({
+            index: idx,
+            cx: isl.cx,
+            cy: isl.cy,
+            isHole: isl.isHole,
+          }));
 
-        // 2. Cluster into lines (by Y)
-        const lines: Island[][] = [];
-        let currentLine: Island[] = [sorted[0]];
-        for (let i = 1; i < sorted.length; i++) {
-          if (Math.abs(sorted[i].cy - currentLine[0].cy) <= LINE_THRESH) {
-            currentLine.push(sorted[i]);
-          } else {
-            lines.push(currentLine);
-            currentLine = [sorted[i]];
-          }
-        }
-        lines.push(currentLine);
+          const assignments = await assignIslandColors(
+            thumbBuf.toString("base64"),
+            "image/jpeg",
+            islandPositions,
+            foreground
+          );
 
-        // 3. Within each line, cluster into words (by X proximity)
-        for (const line of lines) {
-          line.sort((a, b) => a.cx - b.cx);
-          const words: Island[][] = [];
-          let currentWord: Island[] = [line[0]];
-          for (let i = 1; i < line.length; i++) {
-            if (line[i].cx - line[i - 1].cx <= WORD_GAP) {
-              currentWord.push(line[i]);
-            } else {
-              words.push(currentWord);
-              currentWord = [line[i]];
+          // Apply AI assignments
+          for (const a of assignments) {
+            if (a.index >= 0 && a.index < islands.length) {
+              islands[a.index].color = a.color.toLowerCase();
             }
           }
-          words.push(currentWord);
-
-          // 4. Each word: pick majority colour, apply to all members
-          for (const word of words) {
-            if (word.length <= 1) continue;
-            const colorCounts = new Map<string, number>();
-            for (const isl of word) {
-              colorCounts.set(
-                isl.color,
-                (colorCounts.get(isl.color) ?? 0) + 1
-              );
-            }
-            const majority = [...colorCounts.entries()].sort(
-              (a, b) => b[1] - a[1]
-            )[0][0];
-            for (const isl of word) isl.color = majority;
-          }
+        } catch {
+          // AI failed — keep the pixel-sampled colours (still reasonable)
         }
         // Assign each hole to its nearest fill island (the one that "owns" it)
         for (const hole of holeIslands) {
