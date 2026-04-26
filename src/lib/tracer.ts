@@ -103,6 +103,7 @@ export interface TraceResult {
   svg: string;
   silhouetteSVG?: string;
   simplifiedSVG?: string;
+  simplifiedLayers?: Array<{ name: string; color: string; pathCount: number }>;
   description: string;
 }
 
@@ -334,36 +335,35 @@ export async function traceImage(
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
-  // ── 5c. Simplified — break apart silhouette and recolor ─────────
-  // No re-tracing, no masks, no blur. Just:
-  // 1. Parse each subpath from the silhouette's path data
-  // 2. Find the center point of each subpath
-  // 3. Sample the original image at that point to get the colour
-  // 4. Group subpaths by nearest simplified colour
-  // 5. Output one compound path per colour
+  // ── 5c. Simplified — break silhouette into coloured islands ──────
+  // Take the silhouette's subpaths ("islands"), colour each by sampling
+  // the original image, then compound like-coloured islands.
+  // Holes (transparent/bg centers) stay with their nearest fill island
+  // so evenodd cuts them correctly.
+  // Only available when there are 2+ fill islands (otherwise = silhouette).
   let simplifiedSVG: string | undefined;
-  if (foreground.length >= 3 && silhouetteSVG) {
+  let simplifiedLayers: Array<{ name: string; color: string; pathCount: number }> = [];
+  if (silhouetteSVG) {
     try {
-      const SIM_MAX = Math.min(4, foreground.length);
-      const simColors = foreground.slice(0, SIM_MAX);
-      const simRgb = simColors.map((c) => hexToRgb(c));
-
-      // Extract subpaths from the silhouette's d attribute
+      // Get all subpaths from silhouette
       const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
       const subpaths = splitSubpaths(silD);
 
-      // For each subpath, sample its center to determine:
-      // - Is it a HOLE (center is transparent/background)? → add to ALL groups
-      // - Is it a FILL (center is opaque/foreground)? → assign to nearest colour
-      const colorGroups = new Map<string, string[]>();
-      for (const c of simColors) colorGroups.set(c, []);
-      const holeSubpaths: string[] = [];
-
-      // Read raw RGBA for alpha checking, flattened for colour sampling
+      // Classify each subpath: fill-island or hole
       const sampleBuf = await sharp(preprocessed)
         .ensureAlpha()
         .raw()
         .toBuffer();
+
+      interface Island {
+        sp: string;
+        cx: number;
+        cy: number;
+        isHole: boolean;
+        color: string;
+      }
+
+      const islands: Island[] = [];
 
       for (const sp of subpaths) {
         const coords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
@@ -377,47 +377,76 @@ export async function traceImage(
         }
         if (n === 0) continue;
 
-        const px = Math.max(0, Math.min(width - 1, Math.round(sumX / n)));
-        const py = Math.max(0, Math.min(height - 1, Math.round(sumY / n)));
+        const cx = Math.round(sumX / n);
+        const cy = Math.round(sumY / n);
+        const px = Math.max(0, Math.min(width - 1, cx));
+        const py = Math.max(0, Math.min(height - 1, cy));
         const pixIdx = py * width + px;
 
-        // Check if this subpath's center is a hole (transparent or bg)
         const isHole = reallyHasAlpha
-          ? alphaMask[pixIdx] === 0  // transparent = hole
-          : silMask[pixIdx] >= 128;  // background = hole
+          ? alphaMask[pixIdx] === 0
+          : silMask[pixIdx] >= 128;
 
-        if (isHole) {
-          // Hole subpath — add to ALL colour groups so evenodd cuts it out
-          holeSubpaths.push(sp);
-        } else {
-          // Fill subpath — assign to nearest simplified colour
-          const pi = pixIdx * 4;
-          const r = sampleBuf[pi], g = sampleBuf[pi + 1], b = sampleBuf[pi + 2];
-          let bestIdx = 0, bestDist = Infinity;
-          for (let j = 0; j < simRgb.length; j++) {
-            const d = (r - simRgb[j][0]) ** 2 + (g - simRgb[j][1]) ** 2 + (b - simRgb[j][2]) ** 2;
-            if (d < bestDist) { bestDist = d; bestIdx = j; }
+        // Sample colour from the flattened image
+        const pi = pixIdx * 4;
+        const r = sampleBuf[pi], g = sampleBuf[pi + 1], b = sampleBuf[pi + 2];
+
+        // Find nearest foreground colour
+        let bestColor = foreground[0] ?? "#000000";
+        let bestDist = Infinity;
+        for (const fc of foreground) {
+          const [fr, fg, fb] = hexToRgb(fc);
+          const d = (r - fr) ** 2 + (g - fg) ** 2 + (b - fb) ** 2;
+          if (d < bestDist) { bestDist = d; bestColor = fc; }
+        }
+
+        islands.push({ sp, cx, cy, isHole, color: bestColor });
+      }
+
+      const fillIslands = islands.filter((i) => !i.isHole);
+      const holeIslands = islands.filter((i) => i.isHole);
+
+      // Only show simplified if there are 2+ fill islands
+      if (fillIslands.length >= 2) {
+        // Assign each hole to its nearest fill island (the one that "owns" it)
+        for (const hole of holeIslands) {
+          let nearestFill = fillIslands[0];
+          let nearestDist = Infinity;
+          for (const fill of fillIslands) {
+            const d = (hole.cx - fill.cx) ** 2 + (hole.cy - fill.cy) ** 2;
+            if (d < nearestDist) { nearestDist = d; nearestFill = fill; }
           }
-          colorGroups.get(simColors[bestIdx])!.push(sp);
+          // Give the hole the same colour as its owner
+          hole.color = nearestFill.color;
+        }
+
+        // Group all islands (fills + their holes) by colour
+        const colorGroups = new Map<string, string[]>();
+        for (const island of islands) {
+          if (!colorGroups.has(island.color)) colorGroups.set(island.color, []);
+          colorGroups.get(island.color)!.push(island.sp);
+        }
+
+        // Build compound path per colour
+        const simPaths: string[] = [];
+        for (const [color, sps] of colorGroups) {
+          if (sps.length === 0) continue;
+          simPaths.push(`<path d="${sps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
+        }
+
+        if (simPaths.length > 1) {
+          simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
+          simplifiedLayers = [...colorGroups.entries()]
+            .filter(([, sps]) => sps.length > 0)
+            .map(([color, sps]) => ({
+              name: `Layer (${color})`,
+              color,
+              pathCount: sps.length,
+            }));
         }
       }
-
-      // Build one compound path per colour, with holes in each
-      const vb = `0 0 ${width} ${height}`;
-      const simPaths: string[] = [];
-      const holesD = holeSubpaths.join(" ");
-      for (const [color, sps] of colorGroups) {
-        if (sps.length === 0) continue;
-        // Include ALL hole subpaths in each colour group so evenodd cuts them
-        const d = sps.join(" ") + (holesD ? " " + holesD : "");
-        simPaths.push(`<path d="${d}" fill="${color}" fill-rule="evenodd"/>`);
-      }
-
-      if (simPaths.length > 0) {
-        simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">\n${simPaths.join("\n")}\n</svg>`;
-      }
     } catch {
-      // Simplified failed — skip it
+      // Simplified failed — skip
     }
   }
 
@@ -553,7 +582,7 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, simplifiedSVG, description: imageDescription };
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, simplifiedSVG, simplifiedLayers: simplifiedLayers.length > 0 ? simplifiedLayers : undefined, description: imageDescription };
   }
 
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };

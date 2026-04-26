@@ -144,6 +144,7 @@ export async function POST(request: NextRequest) {
         svg: repairedSVG,
         silhouetteSVG: finalLayers.length > 1 ? traceResult.silhouetteSVG : undefined,
         simplifiedSVG: traceResult.simplifiedSVG,
+        simplifiedLayers: traceResult.simplifiedLayers,
         analysis: {
           description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],

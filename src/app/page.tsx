@@ -78,6 +78,7 @@ interface ProcessResult {
   svg: string;
   silhouetteSVG?: string;
   simplifiedSVG?: string;
+  simplifiedLayers?: LayerInfo[];
   analysis: Analysis;
   validation?: Validation;
   changelog?: ChangelogEntry[];
@@ -483,13 +484,21 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* What Changed */}
-              {result.changelog && result.changelog.length > 0 && (
-                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                  <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
-                    <Sparkles size={16} className="text-plum-wine-500" />
-                    What Changed
-                  </h3>
+              {/* What Changed — mode-aware */}
+              <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
+                <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                  <Sparkles size={16} className="text-plum-wine-500" />
+                  What Changed
+                </h3>
+                {outputMode === "silhouette" ? (
+                  <p className="font-body text-sm text-plum-wine-600">
+                    Traced as a solid black silhouette outline of the entire design.
+                  </p>
+                ) : outputMode === "simplified" ? (
+                  <p className="font-body text-sm text-plum-wine-600">
+                    Silhouette broken into coloured islands matching the original design. Like-coloured islands compounded into {result.simplifiedLayers?.length ?? "a few"} layers.
+                  </p>
+                ) : result.changelog && result.changelog.length > 0 ? (
                   <ul className="space-y-2">
                     {result.changelog.map((entry, i) => (
                       <li
@@ -525,42 +534,51 @@ export default function Home() {
                       </li>
                     ))}
                   </ul>
-                </div>
-              )}
+                ) : null}
+              </div>
 
-              {/* Layers */}
-              {result.analysis.layers && result.analysis.layers.length > 0 && (
-                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                  <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
-                    <Layers size={16} className="text-plum-wine-500" />
-                    Cut Layers ({result.analysis.layers.length})
+              {/* Layers — mode-aware */}
+              {(() => {
+                const activeLayers =
+                  outputMode === "silhouette"
+                    ? [{ name: "Silhouette", color: "#000000", pathCount: 1 }]
+                    : outputMode === "simplified"
+                      ? result.simplifiedLayers ?? []
+                      : result.analysis.layers ?? [];
+                if (activeLayers.length === 0) return null;
+                return (
+                  <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
+                    <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                      <Layers size={16} className="text-plum-wine-500" />
+                      Cut Layers ({activeLayers.length})
                   </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {result.analysis.layers.map((layer, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center gap-2.5 rounded-xl bg-alabaster px-4 py-2.5 font-body text-sm"
-                      >
-                        <span
-                          className="inline-block h-5 w-5 rounded-full border border-neutral-300 shadow-sm"
-                          style={{
-                            backgroundColor:
-                              layer.color === "none"
-                                ? "transparent"
-                                : layer.color,
-                          }}
-                        />
-                        <span className="font-medium text-plum-wine-800">
-                          {layer.name}
-                        </span>
-                        <span className="rounded-full bg-plum-wine-50 px-2 py-0.5 text-xs text-plum-wine-500">
-                          {layer.pathCount}
-                        </span>
-                      </div>
-                    ))}
+                    <div className="flex flex-wrap gap-2">
+                      {activeLayers.map((layer, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-2.5 rounded-xl bg-alabaster px-4 py-2.5 font-body text-sm"
+                        >
+                          <span
+                            className="inline-block h-5 w-5 rounded-full border border-neutral-300 shadow-sm"
+                            style={{
+                              backgroundColor:
+                                layer.color === "none"
+                                  ? "transparent"
+                                  : layer.color,
+                            }}
+                          />
+                          <span className="font-medium text-plum-wine-800">
+                            {layer.name}
+                          </span>
+                          <span className="rounded-full bg-plum-wine-50 px-2 py-0.5 text-xs text-plum-wine-500">
+                            {layer.pathCount}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Cuttability Checklist */}
               {result.validation && (
