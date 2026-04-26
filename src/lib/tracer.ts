@@ -294,10 +294,11 @@ export async function traceImage(
       const silPaths: string[] = [];
       for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
         let p = m[0];
-        // Use evenodd — preserves real structural holes (donut shapes)
-        // while the tight SIL_BG_DIST ensures light interior features
-        // (eyes, highlights) are included as solid, not cut out.
-        if (!/fill-rule/.test(p)) p = p.replace("<path", '<path fill-rule="evenodd"');
+        // Silhouette = solid shape. nonzero fills everything — no eye
+        // holes, no letter counter cutouts. Just the outline, filled.
+        // (Simplified mode handles internal detail with evenodd.)
+        p = p.replace(/fill-rule="[^"]*"/g, "");
+        p = p.replace("<path", '<path fill-rule="nonzero"');
         if (/fill="/.test(p)) p = p.replace(/fill="[^"]*"/, 'fill="#000000"');
         silPaths.push(p);
       }
