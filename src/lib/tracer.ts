@@ -367,19 +367,15 @@ export async function traceImage(
       const islands: Island[] = [];
 
       for (const sp of subpaths) {
-        const coords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
-        if (coords.length < 2) continue;
+        // Use the FIRST coordinate (the M moveto point) — this is
+        // always on the actual shape boundary. Averaging all coords
+        // can land in the HOLE of letters like D, O, A where the
+        // inner contour pulls the average to the center of the hole.
+        const firstCoords = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
+        if (!firstCoords) continue;
 
-        let sumX = 0, sumY = 0, n = 0;
-        for (let i = 0; i < coords.length - 1; i += 2) {
-          if (isFinite(coords[i]) && isFinite(coords[i + 1])) {
-            sumX += coords[i]; sumY += coords[i + 1]; n++;
-          }
-        }
-        if (n === 0) continue;
-
-        const cx = Math.round(sumX / n);
-        const cy = Math.round(sumY / n);
+        const cx = Math.round(parseFloat(firstCoords[1]));
+        const cy = Math.round(parseFloat(firstCoords[2]));
         const px = Math.max(0, Math.min(width - 1, cx));
         const py = Math.max(0, Math.min(height - 1, cy));
         const pixIdx = py * width + px;
