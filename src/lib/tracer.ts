@@ -367,35 +367,50 @@ export async function traceImage(
       const islands: Island[] = [];
 
       for (const sp of subpaths) {
-        // Use the FIRST coordinate (the M moveto point) — this is
-        // always on the actual shape boundary. Averaging all coords
-        // can land in the HOLE of letters like D, O, A where the
-        // inner contour pulls the average to the center of the hole.
-        const firstCoords = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
-        if (!firstCoords) continue;
+        // Extract multiple sample points along the subpath for robust
+        // colour detection. Single-point sampling fails when a letter's
+        // start point overlaps a different-coloured element above/below.
+        const allCoords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
+        if (allCoords.length < 2) continue;
 
-        const cx = Math.round(parseFloat(firstCoords[1]));
-        const cy = Math.round(parseFloat(firstCoords[2]));
-        const px = Math.max(0, Math.min(width - 1, cx));
-        const py = Math.max(0, Math.min(height - 1, cy));
-        const pixIdx = py * width + px;
+        // Sample up to 5 evenly spaced coordinate pairs
+        const samplePoints: Array<[number, number]> = [];
+        const step = Math.max(2, Math.floor(allCoords.length / 10)) * 2;
+        for (let ci = 0; ci < allCoords.length - 1 && samplePoints.length < 5; ci += step) {
+          const sx = allCoords[ci], sy = allCoords[ci + 1];
+          if (isFinite(sx) && isFinite(sy)) samplePoints.push([sx, sy]);
+        }
+        if (samplePoints.length === 0) continue;
+
+        // Use the first point as the canonical center for positioning
+        const cx = Math.round(samplePoints[0][0]);
+        const cy = Math.round(samplePoints[0][1]);
+        const px0 = Math.max(0, Math.min(width - 1, cx));
+        const py0 = Math.max(0, Math.min(height - 1, cy));
+        const pixIdx0 = py0 * width + px0;
 
         const isHole = reallyHasAlpha
-          ? alphaMask[pixIdx] === 0
-          : silMask[pixIdx] >= 128;
+          ? alphaMask[pixIdx0] === 0
+          : silMask[pixIdx0] >= 128;
 
-        // Sample colour from the flattened image
-        const pi = pixIdx * 4;
-        const r = sampleBuf[pi], g = sampleBuf[pi + 1], b = sampleBuf[pi + 2];
+        // Sample colour at EACH point, take majority vote
+        const colorVotes = new Map<string, number>();
+        for (const [sx, sy] of samplePoints) {
+          const spx = Math.max(0, Math.min(width - 1, Math.round(sx)));
+          const spy = Math.max(0, Math.min(height - 1, Math.round(sy)));
+          const spi = (spy * width + spx) * 4;
+          const r = sampleBuf[spi], g = sampleBuf[spi + 1], b = sampleBuf[spi + 2];
 
-        // Find nearest foreground colour
-        let bestColor = foreground[0] ?? "#000000";
-        let bestDist = Infinity;
-        for (const fc of foreground) {
-          const [fr, fg, fb] = hexToRgb(fc);
-          const d = (r - fr) ** 2 + (g - fg) ** 2 + (b - fb) ** 2;
-          if (d < bestDist) { bestDist = d; bestColor = fc; }
+          let best = foreground[0] ?? "#000000";
+          let bestD = Infinity;
+          for (const fc of foreground) {
+            const [fr, fg, fb] = hexToRgb(fc);
+            const d = (r - fr) ** 2 + (g - fg) ** 2 + (b - fb) ** 2;
+            if (d < bestD) { bestD = d; best = fc; }
+          }
+          colorVotes.set(best, (colorVotes.get(best) ?? 0) + 1);
         }
+        const bestColor = [...colorVotes.entries()].sort((a, b) => b[1] - a[1])[0][0];
 
         islands.push({ sp, cx, cy, isHole, color: bestColor });
       }
