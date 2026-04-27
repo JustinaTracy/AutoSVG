@@ -430,97 +430,61 @@ export async function consolidateSVG(
     return { svg: svgContent, layers: [] };
   }
 
-  // 2. Determine the "colour key" — use whatever is visible (prefer fill, fall back to stroke)
+  // 2. Colour key for each element
   const colorKey = (el: ParsedElement): string => {
     if (el.fill !== "none") return el.fill;
     if (el.stroke !== "none") return el.stroke;
     return "none";
   };
 
-  // 4. Group elements by their colour
-  const elementsByColor = new Map<string, ParsedElement[]>();
-  for (const el of elements) {
-    const key = colorKey(el);
-    if (!elementsByColor.has(key)) elementsByColor.set(key, []);
-    elementsByColor.get(key)!.push(el);
+  // 3. Build layers respecting STACKING ORDER.
+  // Only compound adjacent same-coloured elements. If a different
+  // colour appears between two groups of the same colour, they stay
+  // as separate layers (because merging would break the visual overlap).
+  interface Layer {
+    color: string;
+    elements: ParsedElement[];
   }
-
-  const uniqueColors = [...elementsByColor.keys()];
-
-  // 5. Determine target layer count and group colours
-  const visibleColors = uniqueColors.filter((c) => c !== "none");
-  const maxGroups = targetGroupCount(visibleColors.length);
-  let colorGroups: ColorGroup[];
-
-  if (visibleColors.length <= 1) {
-    colorGroups = singleGrouping(uniqueColors);
-  } else if (visibleColors.length <= 5) {
-    // 5 or fewer colours — keep them all, no merging needed.
-    // The AI "merge aggressively" prompt destroys subtle variations
-    // like hot pink vs light pink.
-    colorGroups = visibleColors.map((c) => ({
-      name: c,
-      representativeColor: c,
-      inputColors: [c],
-    }));
-  } else {
-    // Build colour stats
-    const colorStats = visibleColors.map((c) => ({
-      color: c,
-      count: elementsByColor.get(c)?.length ?? 0,
-    }));
-
-    try {
-      colorGroups = await groupColorsForCutting(colorStats, maxGroups);
-
-      // Validate: every input colour must appear in exactly one group
-      const covered = new Set(colorGroups.flatMap((g) => g.inputColors));
-      for (const c of visibleColors) {
-        if (!covered.has(c)) {
-          // AI missed a colour — add to nearest group by colour distance
-          const rgb = hexToRgb(c);
-          let bestIdx = 0;
-          let bestDist = Infinity;
-          for (let i = 0; i < colorGroups.length; i++) {
-            const gRgb = hexToRgb(colorGroups[i].representativeColor);
-            const d = colorDist(rgb, gRgb);
-            if (d < bestDist) {
-              bestDist = d;
-              bestIdx = i;
-            }
-          }
-          colorGroups[bestIdx].inputColors.push(c);
-        }
-      }
-
-      // If AI returned too many groups, fall back to clustering
-      if (colorGroups.length > maxGroups + 2) {
-        colorGroups = clusterColors(colorStats, maxGroups);
-      }
-    } catch {
-      // AI unavailable — cluster by colour distance
-      colorGroups = clusterColors(colorStats, maxGroups);
+  const layers: Layer[] = [];
+  for (const el of elements) {
+    const c = colorKey(el);
+    if (c === "none") continue;
+    const prev = layers[layers.length - 1];
+    if (prev && prev.color === c) {
+      prev.elements.push(el);
+    } else {
+      layers.push({ color: c, elements: [el] });
     }
   }
 
-  // 7. Extract viewBox
+  // No grouping/merging — every distinct colour run is its own layer.
+  // This preserves the original stacking order faithfully.
+  const colorGroups: ColorGroup[] = layers.map((l) => ({
+    name: l.color,
+    representativeColor: l.color,
+    inputColors: [l.color],
+  }));
+
+  // 4. Extract viewBox
   const viewBox =
     svgContent.match(/viewBox="([^"]*)"/)?.[1] ?? "0 0 100 100";
 
-  // 7. Build the consolidated SVG
-  const svg = buildSVG(viewBox, colorGroups, elementsByColor);
+  // 5. Build SVG — one compound path per layer, in stacking order
+  const pathStrings: string[] = [];
+  for (const layer of layers) {
+    const compoundD = layer.elements.map((el) => el.d).join(" ");
+    pathStrings.push(
+      `  <!-- ${layer.color} (${layer.elements.length} paths) -->\n  <path d="${compoundD}" fill="${layer.color}" fill-rule="evenodd"/>`
+    );
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${pathStrings.join("\n")}\n</svg>`;
 
-  // 8. Build layer info (exclude invisible "none" groups)
-  const layers: ConsolidationLayer[] = colorGroups
-    .filter((g) => g.representativeColor !== "none")
-    .map((g) => {
-      const count = g.inputColors.reduce(
-        (sum, c) => sum + (elementsByColor.get(c)?.length ?? 0),
-        0
-      );
-      return { name: g.name, color: g.representativeColor, pathCount: count };
-    })
-    .filter((l) => l.pathCount > 0);
+  // 6. Build layer info
+  const outputLayers: ConsolidationLayer[] = layers.map((l) => ({
+    name: l.color,
+    color: l.color,
+    pathCount: l.elements.length,
+  }));
 
-  return { svg, layers };
+  return { svg, layers: outputLayers };
 }
