@@ -25,12 +25,46 @@ export async function POST(request: NextRequest) {
     //
     // Result: same image, same subject, but flat simplified colours
     // that trace cleanly. No AI generation, instant, free.
-    // Step 1: Flatten to white FIRST — before any filtering.
-    // If median runs before flatten, it blends transparent edge
-    // pixels with the alpha channel → dark fringing.
-    const flattened = await sharp(rawBuffer)
+    // Step 1: Flatten transparency to white, then detect and replace
+    // any solid-colour background (black, colored, etc.) with white.
+    const resized = await sharp(rawBuffer)
       .resize(1500, 1500, { fit: "inside", withoutEnlargement: true })
       .flatten({ background: "#ffffff" })
+      .toBuffer();
+
+    // Detect background by sampling edge pixels
+    const { data, info } = await sharp(resized)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const { width, height } = info;
+    const ch = info.channels;
+
+    const edgeCounts = new Map<string, number>();
+    for (let i = 0; i < data.length; i += ch) {
+      const pi = i / ch;
+      const px = pi % width;
+      const py = Math.floor(pi / width);
+      if (px >= 3 && px < width - 3 && py >= 3 && py < height - 3) continue;
+      const hex = `${data[i]},${data[i + 1]},${data[i + 2]}`;
+      edgeCounts.set(hex, (edgeCounts.get(hex) || 0) + 1);
+    }
+    const edgeBg = [...edgeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "255,255,255";
+    const [bgR, bgG, bgB] = edgeBg.split(",").map(Number);
+
+    // Replace background colour with white (threshold distance 60)
+    const isWhite = bgR > 240 && bgG > 240 && bgB > 240;
+    if (!isWhite) {
+      for (let i = 0; i < data.length; i += ch) {
+        const dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
+        if (Math.sqrt(dr * dr + dg * dg + db * db) < 60) {
+          data[i] = 255;
+          data[i + 1] = 255;
+          data[i + 2] = 255;
+        }
+      }
+    }
+
+    const flattened = await sharp(data, { raw: { width, height, channels: ch } })
       .png()
       .toBuffer();
 
