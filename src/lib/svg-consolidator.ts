@@ -420,6 +420,15 @@ export async function consolidateSVG(
 
   if (visibleColors.length <= 1) {
     colorGroups = singleGrouping(uniqueColors);
+  } else if (visibleColors.length <= 5) {
+    // 5 or fewer colours — keep them all, no merging needed.
+    // The AI "merge aggressively" prompt destroys subtle variations
+    // like hot pink vs light pink.
+    colorGroups = visibleColors.map((c) => ({
+      name: c,
+      representativeColor: c,
+      inputColors: [c],
+    }));
   } else {
     // Build colour stats
     const colorStats = visibleColors.map((c) => ({
