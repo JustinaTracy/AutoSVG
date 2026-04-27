@@ -351,75 +351,73 @@ export async function traceImage(
       const subpaths = splitSubpaths(silD);
 
       // Classify each subpath as fill-island or hole
-      // No hole detection. ALL subpaths go to the AI. The AI groups
-      // them (nearby subpaths = same group). Evenodd on each group's
-      // compound path handles holes automatically — exactly like the
-      // silhouette does with all subpaths in one path.
-      interface Island { sp: string; cx: number; cy: number }
-      const islands: Island[] = [];
-      for (const sp of subpaths) {
-        const m = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
-        if (!m) continue;
-        islands.push({ sp, cx: parseFloat(m[1]), cy: parseFloat(m[2]) });
+      // Two-step approach:
+      // 1. Build a per-pixel colour map from the quantized data (same
+      //    as full-colour trace — reliable ground truth)
+      // 2. For each subpath, find its BOUNDING BOX CENTER and sample
+      //    the colour map there to determine its colour
+      // 3. Group subpaths by colour, compound each group with evenodd
+
+      // Step 1: pixel colour map
+      const fgRgb = foreground.map((c) => hexToRgb(c));
+      const pixColorMap = new Uint8Array(totalPixels);
+      for (let i = 0; i < data.length; i += ch) {
+        const pi = i / ch;
+        if (reallyHasAlpha && !alphaMask[pi]) { pixColorMap[pi] = 255; continue; }
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let bestIdx = 0, bestD = Infinity;
+        for (let j = 0; j < fgRgb.length; j++) {
+          const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
+          if (d < bestD) { bestD = d; bestIdx = j; }
+        }
+        pixColorMap[pi] = bestIdx;
       }
-      console.log(`[simplified] ${islands.length} islands`);
 
-      if (islands.length >= 2) {
-        let aiGroups: Array<{ name: string; color: string; islands: number[] }> = [];
-        try {
-          const thumbBuf = await sharp(preprocessed)
-            .resize(600, 600, { fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 60 })
-            .toBuffer();
-          aiGroups = await groupAndColorIslands(
-            thumbBuf.toString("base64"),
-            "image/jpeg",
-            islands.map((isl, i) => ({ index: i, cx: isl.cx, cy: isl.cy })),
-            foreground
-          );
-          console.log(`[simplified] AI returned ${aiGroups.length} groups`);
-        } catch (err: unknown) {
-          console.error("[simplified] AI failed:", err instanceof Error ? err.message : err);
+      // Step 2: for each subpath, find bounding box center and sample
+      const colorBuckets = new Map<string, string[]>();
+      for (const sp of subpaths) {
+        const nums = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
+        if (nums.length < 4) continue;
+
+        // Compute bounding box
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (let i = 0; i < nums.length - 1; i += 2) {
+          if (isFinite(nums[i]) && isFinite(nums[i + 1])) {
+            if (nums[i] < minX) minX = nums[i];
+            if (nums[i] > maxX) maxX = nums[i];
+            if (nums[i + 1] < minY) minY = nums[i + 1];
+            if (nums[i + 1] > maxY) maxY = nums[i + 1];
+          }
         }
 
-        // Fallback: group by pixel colour
-        if (aiGroups.length < 2) {
-          const fgRgb = foreground.map((c) => hexToRgb(c));
-          const buckets = new Map<string, number[]>();
-          for (let i = 0; i < islands.length; i++) {
-            const px = Math.max(0, Math.min(width - 1, Math.round(islands[i].cx)));
-            const py = Math.max(0, Math.min(height - 1, Math.round(islands[i].cy)));
-            const pi = (py * width + px) * ch;
-            let best = foreground[0], bestD = Infinity;
-            for (let j = 0; j < fgRgb.length; j++) {
-              const d = (data[pi]-fgRgb[j][0])**2 + (data[pi+1]-fgRgb[j][1])**2 + (data[pi+2]-fgRgb[j][2])**2;
-              if (d < bestD) { bestD = d; best = foreground[j]; }
-            }
-            if (!buckets.has(best)) buckets.set(best, []);
-            buckets.get(best)!.push(i);
-          }
-          if (buckets.size >= 2) {
-            aiGroups = [...buckets.entries()].map(([color, idxs]) => ({
-              name: `Layer (${color})`, color, islands: idxs,
+        // Sample at bounding box center
+        const bcx = Math.round((minX + maxX) / 2);
+        const bcy = Math.round((minY + maxY) / 2);
+        const px = Math.max(0, Math.min(width - 1, bcx));
+        const py = Math.max(0, Math.min(height - 1, bcy));
+        const idx = pixColorMap[py * width + px];
+        const color = idx < foreground.length ? foreground[idx] : foreground[0];
+
+        if (!colorBuckets.has(color)) colorBuckets.set(color, []);
+        colorBuckets.get(color)!.push(sp);
+      }
+
+      // Step 3: compound each colour group
+      if (colorBuckets.size >= 2) {
+        const simPaths: string[] = [];
+        for (const [color, sps] of colorBuckets) {
+          if (sps.length === 0) continue;
+          simPaths.push(`<path d="${sps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
+        }
+        if (simPaths.length > 1) {
+          simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
+          simplifiedLayers = [...colorBuckets.entries()]
+            .filter(([, sps]) => sps.length > 0)
+            .map(([color, sps]) => ({
+              name: `Layer (${color})`,
+              color,
+              pathCount: sps.length,
             }));
-          }
-        }
-
-        if (aiGroups.length >= 2) {
-          const simPaths: string[] = [];
-          for (const group of aiGroups) {
-            const sps = group.islands
-              .filter((i) => i >= 0 && i < islands.length)
-              .map((i) => islands[i].sp);
-            if (sps.length === 0) continue;
-            simPaths.push(`<path d="${sps.join(" ")}" fill="${group.color.toLowerCase()}" fill-rule="evenodd"/>`);
-          }
-          if (simPaths.length > 1) {
-            simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
-            simplifiedLayers = aiGroups
-              .filter((g) => g.islands.length > 0)
-              .map((g) => ({ name: g.name, color: g.color.toLowerCase(), pathCount: g.islands.length }));
-          }
         }
       }
     } catch {
