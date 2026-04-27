@@ -402,7 +402,7 @@ export async function traceImage(
         // Check if this is a hole (center on background/transparent)
         const onBackground = reallyHasAlpha
           ? alphaMask[pidx] === 0
-          : pixColorMap[pidx] === 255;
+          : silMask[pidx] >= 128; // silMask: 255=bg, 0=fg
 
         if (onBackground) {
           // Hole subpath — defer colour assignment
