@@ -68,10 +68,10 @@ export async function POST(request: NextRequest) {
       {
         input: {
           image: dataUri,
-          prompt: `Flat color vector illustration of ${description}. Solid flat colors, clean sharp edges, simple bold shapes, no gradients, no shading, no shadows, no texture, no halftones, white background`,
+          prompt: `Simple flat color cartoon of ${description}. Cel-shaded, 2D, solid flat color fills, crisp clean edges, bold outlines, minimal detail, SVG style, die-cut ready, white background`,
           negative_prompt:
-            "gradient, shadow, texture, 3d, realistic, photographic, shading, halftone, watercolor, painterly, blurry, noisy, sticker, border, frame",
-          condition_scale: 0.85,
+            "gradient, shadow, texture, 3d, realistic, photographic, shading, halftone, watercolor, painterly, blurry, noisy, sticker, border, frame, soft edges, smooth shading, depth, lighting",
+          condition_scale: 0.5,
           num_inference_steps: 30,
         },
       }
