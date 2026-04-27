@@ -98,9 +98,18 @@ function resolveElementColor(
     if (ss) stroke = ss;
   }
 
+  // Normalise near-black to #000000 (design tools export #202325 etc.)
+  let finalFill = fill || "#000000";
+  if (finalFill !== "none" && finalFill !== "#000000") {
+    const h = finalFill.replace("#", "");
+    const r = parseInt(h.substring(0, 2), 16) || 0;
+    const g = parseInt(h.substring(2, 4), 16) || 0;
+    const b = parseInt(h.substring(4, 6), 16) || 0;
+    if (Math.sqrt(r * r + g * g + b * b) < 65) finalFill = "#000000";
+  }
+
   return {
-    // SVG spec: default fill is black, default stroke is none
-    fill: fill || "#000000",
+    fill: finalFill,
     stroke: stroke || "none",
   };
 }
@@ -445,7 +454,7 @@ export async function consolidateSVG(
     color: string;
     elements: ParsedElement[];
   }
-  const NEAR_MATCH = 65; // merge nearly-identical colours (#000 vs #202325 = dist 60)
+  const NEAR_MATCH = 20; // only merge truly identical shades (avoids chain-merging)
   const MIN_PATH_LEN = 100; // skip tiny artifact paths (< 100 chars of path data)
   const layers: Layer[] = [];
   for (const el of elements) {
