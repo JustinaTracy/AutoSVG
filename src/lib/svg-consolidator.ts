@@ -169,9 +169,18 @@ function extractElements(
     elements.push({ d, fill, stroke });
   }
 
-  // <rect>
+  // <rect> — skip full-canvas background rects (Illustrator artboards)
+  const vbMatch = svg.match(/viewBox="([^"]*)"/);
+  const vbParts = vbMatch?.[1]?.split(/\s+/).map(Number) ?? [];
+  const vbW = vbParts[2] ?? 10000;
+  const vbH = vbParts[3] ?? 10000;
+
   const rectRe = /<rect\b[^>]*\/?>/gi;
   while ((m = rectRe.exec(svg)) !== null) {
+    const rw = parseFloat(m[0].match(/\bwidth="([^"]*)"/)?.[1] ?? "0");
+    const rh = parseFloat(m[0].match(/\bheight="([^"]*)"/)?.[1] ?? "0");
+    // Skip rects that are ≥90% of the canvas — background/artboard
+    if (rw >= vbW * 0.9 && rh >= vbH * 0.9) continue;
     const d = rectToPath(m[0]);
     if (!d) continue;
     const { fill, stroke } = resolveElementColor(m[0], classStyles);
