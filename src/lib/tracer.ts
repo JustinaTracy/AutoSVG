@@ -117,7 +117,7 @@ export async function traceImage(
   const hasAlpha = !!(meta.channels && meta.channels >= 4 && meta.hasAlpha);
 
   // ── 2. Resize and read raw RGBA (before flattening) ────────────
-  const resized = sharp(imageBuffer).resize(1200, 1200, {
+  const resized = sharp(imageBuffer).resize(1500, 1500, {
     fit: "inside",
     withoutEnlargement: true,
   });
@@ -320,7 +320,7 @@ export async function traceImage(
   // 80 catches "same colour family" like two shades of yellow on a
   // lemon (distance ~78) while keeping genuinely different hues
   // separate (red vs orange is ~128, blue vs purple is ~130+).
-  const MIN_COLOR_DIST = 80;
+  const MIN_COLOR_DIST = 50; // catches true dupes (dist ~20-30) without merging distinct colours
   foreground = mergeNearDuplicates(foreground, counts, MIN_COLOR_DIST);
 
   // 2) Absorb "satellite" colours: if a colour has < 10% the pixels
@@ -400,10 +400,9 @@ export async function traceImage(
         color: color,
         background: "transparent",
         turdSize: 100,
-        // optTolerance: curve-fitting tolerance. Higher = smoother
-        // paths with fewer nodes. Default 0.4 is pixel-level jagged.
-        // 2.0 gives clean smooth curves ideal for cutting machines.
-        optTolerance: 2.0,
+        // optTolerance: curve-fitting tolerance. Higher = smoother.
+        // 1.5 balances crisp detail with clean curves for cutting.
+        optTolerance: 1.5,
       });
 
       // Pull <path> elements out of potrace's SVG
