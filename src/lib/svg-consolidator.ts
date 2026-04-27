@@ -158,6 +158,28 @@ function extractElements(
 ): ParsedElement[] {
   const elements: ParsedElement[] = [];
 
+  // Build a map of inherited fills from <g> parent elements.
+  // Walk through the SVG tracking open/close <g> tags and their fills.
+  const groupFillStack: string[] = [];
+  const inheritedFillAt = new Map<number, string>(); // position → inherited fill
+
+  const tagRe = /<(\/?)g\b([^>]*)>|<(path|rect|polygon|circle|ellipse)\b/gi;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = tagRe.exec(svg)) !== null) {
+    if (tagMatch[1] === "/") {
+      // </g>
+      groupFillStack.pop();
+    } else if (tagMatch[0].startsWith("<g")) {
+      // <g ...> — check for fill attribute
+      const gFill = tagMatch[2].match(/\bfill="([^"]*)"/)?.[1];
+      groupFillStack.push(gFill ?? groupFillStack[groupFillStack.length - 1] ?? "");
+    } else {
+      // drawable element — record its inherited fill
+      const inherited = groupFillStack[groupFillStack.length - 1] ?? "";
+      if (inherited) inheritedFillAt.set(tagMatch.index, inherited);
+    }
+  }
+
   // <path d="...">
   const pathRe = /<path\b[^>]*>/gi;
   let m: RegExpExecArray | null;
@@ -165,7 +187,12 @@ function extractElements(
     const el = m[0];
     const d = el.match(/\bd="([^"]*)"/)?.[1]?.trim();
     if (!d) continue;
-    const { fill, stroke } = resolveElementColor(el, classStyles);
+    let { fill, stroke } = resolveElementColor(el, classStyles);
+    // If no fill was resolved, check inherited from parent <g>
+    if (fill === "#000000" && !el.includes('fill=') && !el.includes('class=')) {
+      const inherited = inheritedFillAt.get(m.index);
+      if (inherited) fill = inherited;
+    }
     elements.push({ d, fill, stroke });
   }
 
@@ -179,11 +206,14 @@ function extractElements(
   while ((m = rectRe.exec(svg)) !== null) {
     const rw = parseFloat(m[0].match(/\bwidth="([^"]*)"/)?.[1] ?? "0");
     const rh = parseFloat(m[0].match(/\bheight="([^"]*)"/)?.[1] ?? "0");
-    // Skip rects that are ≥90% of the canvas — background/artboard
     if (rw >= vbW * 0.9 && rh >= vbH * 0.9) continue;
     const d = rectToPath(m[0]);
     if (!d) continue;
-    const { fill, stroke } = resolveElementColor(m[0], classStyles);
+    let { fill, stroke } = resolveElementColor(m[0], classStyles);
+    if (fill === "#000000" && !m[0].includes('fill=') && !m[0].includes('class=')) {
+      const inherited = inheritedFillAt.get(m.index);
+      if (inherited) fill = inherited;
+    }
     elements.push({ d, fill, stroke });
   }
 
@@ -192,7 +222,11 @@ function extractElements(
   while ((m = polyRe.exec(svg)) !== null) {
     const d = polygonToPath(m[0]);
     if (!d) continue;
-    const { fill, stroke } = resolveElementColor(m[0], classStyles);
+    let { fill, stroke } = resolveElementColor(m[0], classStyles);
+    if (fill === "#000000" && !m[0].includes('fill=') && !m[0].includes('class=')) {
+      const inherited = inheritedFillAt.get(m.index);
+      if (inherited) fill = inherited;
+    }
     elements.push({ d, fill, stroke });
   }
 
