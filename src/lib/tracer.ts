@@ -401,8 +401,11 @@ export async function traceImage(
             foreground
           );
           console.log(`[simplified] AI returned ${aiGroups.length} groups`);
-        } catch (err) {
-          console.error("[simplified] AI grouping failed:", err);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error("[simplified] AI grouping failed:", msg);
+          // Store error for debugging
+          (globalThis as Record<string, unknown>).__simplifiedError = msg;
         }
 
         // Fallback if AI failed: group by pixel-sampled colour
