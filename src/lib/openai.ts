@@ -251,9 +251,10 @@ export async function groupAndColorIslands(
 ): Promise<IslandGroup[]> {
   if (islands.length === 0) return [];
 
+  // Compact format: "idx:x,y" to minimize token usage
   const islandList = islands
-    .map((i) => `#${i.index} at (${Math.round(i.cx)}, ${Math.round(i.cy)})`)
-    .join(", ");
+    .map((i) => `${i.index}:${Math.round(i.cx)},${Math.round(i.cy)}`)
+    .join(" ");
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -271,32 +272,26 @@ export async function groupAndColorIslands(
           },
           {
             type: "text",
-            text: `I've broken this design's silhouette into separate vector islands. Each island is a shape at a position in the image. I need you to NAME and GROUP them for a simplified coloured vinyl cut.
+            text: `This design's silhouette has been broken into ${islands.length} vector islands (shapes). I need to colour them for a simplified vinyl cut.
 
-Islands: ${islandList}
+Island positions (id:x,y): ${islandList}
 
-Available colours: ${JSON.stringify(availableColors)}
+Colours: ${availableColors.join(" ")}
 
-STEP 1: Identify what each island IS by its position in the image (a letter, a star, a flower, a character, etc.)
-STEP 2: Group islands that belong together:
-  - All letters in the SAME WORD → one group (e.g. "Word: DAYS")
-  - Repeated decorative elements → one group (e.g. "Stars" or "Flowers")
-  - Distinct characters/objects → their own group
-STEP 3: Pick ONE colour per group from the available list that best matches what that group looks like in the original image.
+Look at the image. Group the islands:
+- Letters in the SAME WORD = one group
+- Repeated shapes (stars, flowers) = one group
+- Distinct characters = own group
 
-Return JSON:
-{
-  "groups": [
-    { "name": "descriptive group name", "color": "#hex", "islands": [0, 1, 2] }
-  ]
-}
+Pick one colour per group from the list.
 
-Every island index MUST appear in exactly one group. Use the hex values from the available colours list exactly as given.`,
+Return JSON: {"groups":[{"name":"group name","color":"#hex","islands":[0,1,2]}]}
+Every island id must be in exactly one group.`,
           },
         ],
       },
     ],
-    max_tokens: 800,
+    max_tokens: 1200,
   });
 
   const data = JSON.parse(response.choices[0].message.content || "{}");

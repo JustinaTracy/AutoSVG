@@ -11,7 +11,7 @@ import {
   extractInputStats,
 } from "@/lib/svg-validator";
 
-export const maxDuration = 60; // seconds — tracing multiple colours takes time
+export const maxDuration = 120; // seconds — tracing + 2 AI calls can take 40-60s
 
 const MAX_RASTER_SIZE = 50 * 1024 * 1024;
 const MAX_SVG_SIZE = 10 * 1024 * 1024;
