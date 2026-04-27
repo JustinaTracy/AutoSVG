@@ -445,12 +445,18 @@ export async function consolidateSVG(
     color: string;
     elements: ParsedElement[];
   }
+  const NEAR_MATCH = 40; // merge nearly-identical colours (#000 vs #202325)
   const layers: Layer[] = [];
   for (const el of elements) {
     const c = colorKey(el);
     if (c === "none") continue;
     const prev = layers[layers.length - 1];
-    if (prev && prev.color === c) {
+    // Merge with previous layer if exact match OR very close colour
+    const isMatch = prev && (
+      prev.color === c ||
+      colorDist(hexToRgb(prev.color), hexToRgb(c)) < NEAR_MATCH
+    );
+    if (isMatch) {
       prev.elements.push(el);
     } else {
       layers.push({ color: c, elements: [el] });
