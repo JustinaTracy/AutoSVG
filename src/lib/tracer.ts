@@ -351,149 +351,74 @@ export async function traceImage(
       const subpaths = splitSubpaths(silD);
 
       // Classify each subpath as fill-island or hole
-      interface Island {
-        sp: string;
-        cx: number;
-        cy: number;
-        isHole: boolean;
-      }
-
+      // No hole detection. ALL subpaths go to the AI. The AI groups
+      // them (nearby subpaths = same group). Evenodd on each group's
+      // compound path handles holes automatically — exactly like the
+      // silhouette does with all subpaths in one path.
+      interface Island { sp: string; cx: number; cy: number }
       const islands: Island[] = [];
       for (const sp of subpaths) {
-        // First point = on the boundary (for colour sampling later)
-        const firstCoords = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
-        if (!firstCoords) continue;
-        const cx = parseFloat(firstCoords[1]);
-        const cy = parseFloat(firstCoords[2]);
-
-        // AVERAGE center = inside the shape (for hole detection).
-        // For a letter counter (inside P, e, a), the average center
-        // falls inside the hole (transparent), while the first point
-        // is on the boundary (inside the opaque letter body).
-        const allNums = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
-        let sumX = 0, sumY = 0, n = 0;
-        for (let i = 0; i < allNums.length - 1; i += 2) {
-          if (isFinite(allNums[i]) && isFinite(allNums[i + 1])) {
-            sumX += allNums[i]; sumY += allNums[i + 1]; n++;
-          }
-        }
-        const avgX = n > 0 ? Math.round(sumX / n) : Math.round(cx);
-        const avgY = n > 0 ? Math.round(sumY / n) : Math.round(cy);
-        const hpx = Math.max(0, Math.min(width - 1, avgX));
-        const hpy = Math.max(0, Math.min(height - 1, avgY));
-        const holeIdx = hpy * width + hpx;
-
-        const isHole = reallyHasAlpha
-          ? alphaMask[holeIdx] === 0
-          : silMask[holeIdx] >= 128;
-
-        islands.push({ sp, cx, cy, isHole });
+        const m = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
+        if (!m) continue;
+        islands.push({ sp, cx: parseFloat(m[1]), cy: parseFloat(m[2]) });
       }
+      console.log(`[simplified] ${islands.length} islands`);
 
-      const fillIslands = islands.filter((i) => !i.isHole);
-      const holeIslands = islands.filter((i) => i.isHole);
-      console.log(`[simplified] ${fillIslands.length} fills, ${holeIslands.length} holes`);
-
-      if (fillIslands.length >= 2) {
-        // Ask AI to NAME, GROUP, and COLOR the islands.
-        // AI sees the image + island positions, identifies what each is
-        // (letters of a word, stars, characters), groups them, picks colors.
+      if (islands.length >= 2) {
         let aiGroups: Array<{ name: string; color: string; islands: number[] }> = [];
         try {
           const thumbBuf = await sharp(preprocessed)
             .resize(600, 600, { fit: "inside", withoutEnlargement: true })
             .jpeg({ quality: 60 })
             .toBuffer();
-
-          const fillPositions = fillIslands.map((isl, idx) => ({
-            index: idx,
-            cx: isl.cx,
-            cy: isl.cy,
-          }));
-
           aiGroups = await groupAndColorIslands(
             thumbBuf.toString("base64"),
             "image/jpeg",
-            fillPositions,
+            islands.map((isl, i) => ({ index: i, cx: isl.cx, cy: isl.cy })),
             foreground
           );
           console.log(`[simplified] AI returned ${aiGroups.length} groups`);
         } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error("[simplified] AI grouping failed:", msg);
+          console.error("[simplified] AI failed:", err instanceof Error ? err.message : err);
         }
 
-        // Fallback if AI failed: group by pixel-sampled colour
+        // Fallback: group by pixel colour
         if (aiGroups.length < 2) {
-          console.log("[simplified] Using pixel-colour fallback");
           const fgRgb = foreground.map((c) => hexToRgb(c));
-          const colorBuckets = new Map<string, number[]>();
-          for (let fi = 0; fi < fillIslands.length; fi++) {
-            const isl = fillIslands[fi];
-            const px = Math.max(0, Math.min(width - 1, Math.round(isl.cx)));
-            const py = Math.max(0, Math.min(height - 1, Math.round(isl.cy)));
+          const buckets = new Map<string, number[]>();
+          for (let i = 0; i < islands.length; i++) {
+            const px = Math.max(0, Math.min(width - 1, Math.round(islands[i].cx)));
+            const py = Math.max(0, Math.min(height - 1, Math.round(islands[i].cy)));
             const pi = (py * width + px) * ch;
-            const r = data[pi], g = data[pi + 1], b = data[pi + 2];
-            let bestC = foreground[0];
-            let bestD = Infinity;
+            let best = foreground[0], bestD = Infinity;
             for (let j = 0; j < fgRgb.length; j++) {
-              const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
-              if (d < bestD) { bestD = d; bestC = foreground[j]; }
+              const d = (data[pi]-fgRgb[j][0])**2 + (data[pi+1]-fgRgb[j][1])**2 + (data[pi+2]-fgRgb[j][2])**2;
+              if (d < bestD) { bestD = d; best = foreground[j]; }
             }
-            if (!colorBuckets.has(bestC)) colorBuckets.set(bestC, []);
-            colorBuckets.get(bestC)!.push(fi);
+            if (!buckets.has(best)) buckets.set(best, []);
+            buckets.get(best)!.push(i);
           }
-          if (colorBuckets.size >= 2) {
-            aiGroups = [...colorBuckets.entries()].map(([color, idxs]) => ({
-              name: `Layer (${color})`,
-              color,
-              islands: idxs,
+          if (buckets.size >= 2) {
+            aiGroups = [...buckets.entries()].map(([color, idxs]) => ({
+              name: `Layer (${color})`, color, islands: idxs,
             }));
           }
         }
 
         if (aiGroups.length >= 2) {
-          // Build compound paths per AI group
           const simPaths: string[] = [];
-
           for (const group of aiGroups) {
-            // Collect fill-island subpaths for this group
-            const groupSps: string[] = [];
-            for (const idx of group.islands) {
-              if (idx >= 0 && idx < fillIslands.length) {
-                groupSps.push(fillIslands[idx].sp);
-              }
-            }
-            if (groupSps.length === 0) continue;
-
-            // Find holes that belong to this group's islands
-            // (hole's nearest fill island is in this group)
-            for (const hole of holeIslands) {
-              let nearestIdx = 0;
-              let nearestDist = Infinity;
-              for (let fi = 0; fi < fillIslands.length; fi++) {
-                const d = (hole.cx - fillIslands[fi].cx) ** 2 +
-                          (hole.cy - fillIslands[fi].cy) ** 2;
-                if (d < nearestDist) { nearestDist = d; nearestIdx = fi; }
-              }
-              if (group.islands.includes(nearestIdx)) {
-                groupSps.push(hole.sp);
-              }
-            }
-
-            const color = group.color.toLowerCase();
-            simPaths.push(`<path d="${groupSps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
+            const sps = group.islands
+              .filter((i) => i >= 0 && i < islands.length)
+              .map((i) => islands[i].sp);
+            if (sps.length === 0) continue;
+            simPaths.push(`<path d="${sps.join(" ")}" fill="${group.color.toLowerCase()}" fill-rule="evenodd"/>`);
           }
-
           if (simPaths.length > 1) {
             simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
             simplifiedLayers = aiGroups
               .filter((g) => g.islands.length > 0)
-              .map((g) => ({
-                name: g.name,
-                color: g.color.toLowerCase(),
-                pathCount: g.islands.length,
-              }));
+              .map((g) => ({ name: g.name, color: g.color.toLowerCase(), pathCount: g.islands.length }));
           }
         }
       }
