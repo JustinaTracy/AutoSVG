@@ -93,6 +93,7 @@ export default function Home() {
   const [aiDisabled, setAiDisabled] = useState(false);
   const [consolidatedSVG, setConsolidatedSVG] = useState<string | null>(null);
   const [consolidatedLayers, setConsolidatedLayers] = useState<LayerInfo[] | null>(null);
+  const [undoStack, setUndoStack] = useState<Array<{ svg: string | null; layers: LayerInfo[] | null }>>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -144,6 +145,7 @@ export default function Home() {
     setOutputMode("color");
     setConsolidatedSVG(null);
     setConsolidatedLayers(null);
+    setUndoStack([]);
     setStatus("processing");
 
     // Build original preview
@@ -234,6 +236,7 @@ export default function Home() {
     setError("");
     setConsolidatedSVG(null);
     setConsolidatedLayers(null);
+    setUndoStack([]);
   }, []);
 
   const handleConsolidate = useCallback(() => {
@@ -241,9 +244,22 @@ export default function Home() {
     if (!currentSVG) return;
     const consolidated = consolidateSVGLayers(currentSVG);
     if (!consolidated) return;
+    // Push current state to undo stack before applying
+    setUndoStack((prev) => [
+      ...prev,
+      { svg: consolidatedSVG, layers: consolidatedLayers },
+    ]);
     setConsolidatedSVG(consolidated.svg);
     setConsolidatedLayers(consolidated.layers);
-  }, [consolidatedSVG, result]);
+  }, [consolidatedSVG, consolidatedLayers, result]);
+
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((s) => s.slice(0, -1));
+    setConsolidatedSVG(prev.svg);
+    setConsolidatedLayers(prev.layers);
+  }, [undoStack]);
 
   /* ── Render ───────────────────────────────────────────────── */
 
@@ -525,25 +541,25 @@ export default function Home() {
                         <Layers size={16} className="text-plum-wine-500" />
                         Cut Layers ({activeLayers.length})
                       </h3>
-                      {outputMode === "color" && activeLayers.length >= 2 && (
-                        <div className="flex items-center gap-3">
-                          {consolidatedSVG && (
+                      {outputMode === "color" && (
+                        <div className="flex items-center gap-2">
+                          {undoStack.length > 0 && (
                             <button
-                              onClick={() => {
-                                setConsolidatedSVG(null);
-                                setConsolidatedLayers(null);
-                              }}
-                              className="font-body text-xs font-medium text-plum-wine-500 underline decoration-plum-wine-300 underline-offset-2 transition-colors hover:text-plum-wine-700"
+                              onClick={handleUndo}
+                              className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2.5 py-1 font-body text-xs font-medium text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
                             >
-                              Reset Layers
+                              <RotateCcw size={12} />
+                              Undo
                             </button>
                           )}
-                          <button
-                            onClick={handleConsolidate}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-plum-wine-200 bg-plum-wine-50 px-3 py-1 font-body text-xs font-medium text-plum-wine-700 transition-colors hover:bg-plum-wine-100"
-                          >
-                            Consolidate Layers
-                          </button>
+                          {activeLayers.length >= 2 && (
+                            <button
+                              onClick={handleConsolidate}
+                              className="inline-flex items-center gap-1.5 rounded-full border border-plum-wine-200 bg-plum-wine-50 px-3 py-1 font-body text-xs font-medium text-plum-wine-700 transition-colors hover:bg-plum-wine-100"
+                            >
+                              Consolidate Layers
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
