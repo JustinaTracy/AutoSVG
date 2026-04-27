@@ -140,10 +140,33 @@ export async function POST(request: NextRequest) {
         ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
       ];
 
+      // For single-colour traces, use the silhouette as the main output —
+      // it produces a cleaner single-layer trace than the per-colour pipeline.
+      if (finalLayers.length <= 1 && traceResult.silhouetteSVG) {
+        return NextResponse.json({
+          success: true,
+          svg: traceResult.silhouetteSVG,
+          analysis: {
+            description: traceResult.description || "Processed image",
+            originalType: mimeType.split("/")[1],
+            colorCount: 1,
+            isMultiLayered: false,
+            layers: [{ name: "Design", color: "#000000", pathCount: 1 }],
+          },
+          changelog: [
+            {
+              action: "consolidated" as const,
+              detail: "Traced as a single-layer silhouette for clean cutting.",
+            },
+            ...repairs.map((r) => ({ action: "fixed" as const, detail: r })),
+          ],
+        });
+      }
+
       return NextResponse.json({
         success: true,
         svg: repairedSVG,
-        silhouetteSVG: finalLayers.length > 1 ? traceResult.silhouetteSVG : undefined,
+        silhouetteSVG: traceResult.silhouetteSVG,
         analysis: {
           description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],
