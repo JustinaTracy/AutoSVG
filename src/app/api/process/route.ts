@@ -145,7 +145,6 @@ export async function POST(request: NextRequest) {
         silhouetteSVG: finalLayers.length > 1 ? traceResult.silhouetteSVG : undefined,
         simplifiedSVG: traceResult.simplifiedSVG,
         simplifiedLayers: traceResult.simplifiedLayers,
-        _debugSimplifiedError: (globalThis as Record<string, unknown>).__simplifiedError ?? null,
         analysis: {
           description: traceResult.description || "Processed image",
           originalType: mimeType.split("/")[1],
