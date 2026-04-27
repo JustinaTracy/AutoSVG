@@ -36,13 +36,13 @@ export async function POST(request: NextRequest) {
       {
         input: {
           prompt:
-            "Transform this image into a simplified flat-color vector illustration. " +
-            "Keep the EXACT same subject, character, composition, and pose. " +
+            "Transform this image into a simplified flat-color illustration. " +
+            "Keep the EXACT same subject, character, composition, pose, and proportions. " +
             "Keep the EXACT same color palette — do not change any colors. " +
             "Replace all gradients, textures, watercolor effects, and shading with solid flat color fills. " +
-            "Each color region should be one solid color with clean sharp edges — like a vinyl sticker cut from colored vinyl. " +
-            "No gradients. No shadows. No texture. No halftones. No 3D effects. " +
-            "Simple bold shapes with clean outlines. White background.",
+            "Each color region should be one solid color with clean sharp edges. " +
+            "No gradients. No shadows. No texture. No halftones. No 3D effects. No border or outline around the image. " +
+            "Simple bold shapes. White background. The subject should fill the frame the same way as the original.",
           image: dataUri,
           aspect_ratio: "1:1",
           output_format: "png",
