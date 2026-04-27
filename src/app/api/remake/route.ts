@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 import Replicate from "replicate";
+import OpenAI from "openai";
 
 export const maxDuration = 120;
 
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,8 +23,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Resize to a clean 1024x1024 JPEG for Replicate — keeps the
-    // data URI small and gives Kontext a clear reference image.
+    // Resize to 1024 JPEG with white bg for both AI description and ControlNet
     const rawBuffer = Buffer.from(await file.arrayBuffer());
     const resized = await sharp(rawBuffer)
       .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
@@ -31,46 +33,51 @@ export async function POST(request: NextRequest) {
 
     const dataUri = `data:image/jpeg;base64,${resized.toString("base64")}`;
 
+    // Step 1: Ask GPT-4o to describe the image for the SDXL prompt
+    let description = "flat color vector illustration";
+    try {
+      const vision = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image_url",
+                image_url: { url: dataUri, detail: "low" },
+              },
+              {
+                type: "text",
+                text: "Describe this image in one sentence for an AI image generator. Focus on: what the subject is, the colors used, and the composition. Keep it under 30 words. Do not mention style or medium.",
+              },
+            ],
+          },
+        ],
+        max_tokens: 60,
+      });
+      description =
+        vision.choices[0].message.content?.trim() || description;
+    } catch {
+      // GPT-4o failed — use generic description
+    }
+
+    // Step 2: Run SDXL ControlNet Canny — edges from the original,
+    // style from the prompt. Canny preserves the exact outlines.
     const output = await replicate.run(
-      "black-forest-labs/flux-kontext-pro",
+      "lucataco/sdxl-controlnet:06d6fae3b75ab68a28cd2900afa6033166910dd09fd9751047043a5bbb4c184b",
       {
         input: {
-          prompt:
-            "Transform this image into a simplified flat-color illustration. " +
-            "Keep the EXACT same subject, character, composition, pose, and proportions. " +
-            "Keep the EXACT same color palette — do not change any colors. " +
-            "Replace all gradients, textures, watercolor effects, and shading with solid flat color fills. " +
-            "Each color region should be one solid color with clean sharp edges. " +
-            "No gradients. No shadows. No texture. No halftones. No 3D effects. No border or outline around the image. " +
-            "Simple bold shapes. White background. The subject should fill the frame the same way as the original.",
           image: dataUri,
-          aspect_ratio: "1:1",
-          output_format: "png",
-          safety_tolerance: 5,
+          prompt: `Flat color vector illustration of ${description}. Solid flat colors, clean sharp edges, simple bold shapes, no gradients, no shading, no shadows, no texture, no halftones, white background`,
+          negative_prompt:
+            "gradient, shadow, texture, 3d, realistic, photographic, shading, halftone, watercolor, painterly, blurry, noisy, sticker, border, frame",
+          condition_scale: 0.85,
+          num_inference_steps: 30,
         },
       }
     );
 
-    // Replicate returns a ReadableStream or URL
-    let imageUrl: string;
-    if (typeof output === "string") {
-      imageUrl = output;
-    } else if (output instanceof ReadableStream) {
-      const reader = output.getReader();
-      const chunks: Uint8Array[] = [];
-      let done = false;
-      while (!done) {
-        const { value, done: d } = await reader.read();
-        if (value) chunks.push(value);
-        done = d;
-      }
-      const combined = Buffer.concat(chunks);
-      imageUrl = `data:image/png;base64,${combined.toString("base64")}`;
-    } else if (Array.isArray(output) && typeof output[0] === "string") {
-      imageUrl = output[0];
-    } else {
-      imageUrl = String(output);
-    }
+    const imageUrl = String(output);
 
     return NextResponse.json({ success: true, imageUrl });
   } catch (err: unknown) {
