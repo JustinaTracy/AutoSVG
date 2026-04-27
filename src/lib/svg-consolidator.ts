@@ -483,19 +483,28 @@ export async function consolidateSVG(
     inputColors: [l.color],
   }));
 
-  // 4. Extract viewBox
+  // 4. Extract viewBox and any root-level group transform
   const viewBox =
     svgContent.match(/viewBox="([^"]*)"/)?.[1] ?? "0 0 100 100";
+
+  // Detect transforms on <g> elements — preserve the outermost one
+  // so content positioning isn't lost (common in Inkscape exports)
+  const groupTransform =
+    svgContent.match(/<g[^>]*\btransform="([^"]*)"/)?.[1] ?? "";
 
   // 5. Build SVG — one compound path per layer, in stacking order
   const pathStrings: string[] = [];
   for (const layer of layers) {
     const compoundD = layer.elements.map((el) => el.d).join(" ");
     pathStrings.push(
-      `  <!-- ${layer.color} (${layer.elements.length} paths) -->\n  <path d="${compoundD}" fill="${layer.color}" fill-rule="evenodd"/>`
+      `  <path d="${compoundD}" fill="${layer.color}" fill-rule="evenodd"/>`
     );
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${pathStrings.join("\n")}\n</svg>`;
+  const innerContent = pathStrings.join("\n");
+  const wrappedContent = groupTransform
+    ? `<g transform="${groupTransform}">\n${innerContent}\n</g>`
+    : innerContent;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${wrappedContent}\n</svg>`;
 
   // 6. Build layer info
   const outputLayers: ConsolidationLayer[] = layers.map((l) => ({
