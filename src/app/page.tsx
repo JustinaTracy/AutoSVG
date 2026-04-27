@@ -430,9 +430,20 @@ export default function Home() {
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 {/* Original */}
                 <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                  <h3 className="mb-3 font-heading text-lg text-plum-wine-900">
-                    Original
-                  </h3>
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="font-heading text-lg text-plum-wine-900">
+                      Original
+                    </h3>
+                    {result.analysis.originalType !== "svg" && (
+                      <button
+                        onClick={handleRemake}
+                        disabled={remaking}
+                        className="font-body text-xs font-medium text-plum-wine-500 underline decoration-plum-wine-300 underline-offset-2 transition-colors hover:text-plum-wine-700 disabled:opacity-50 disabled:no-underline"
+                      >
+                        {remaking ? "Remaking…" : "Remake for Vector"}
+                      </button>
+                    )}
+                  </div>
                   <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100 p-4">
                     {originalPreview && (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -600,19 +611,6 @@ export default function Home() {
                   <Download size={18} />
                   Download Cut-Ready SVG
                 </button>
-                {result.analysis.originalType !== "svg" && (
-                  <button
-                    onClick={handleRemake}
-                    disabled={remaking}
-                    className="inline-flex items-center gap-2 rounded-full border border-plum-wine-500 bg-plum-wine-50 px-6 py-3.5 font-body text-base font-semibold text-plum-wine-700 transition-colors hover:bg-plum-wine-100 disabled:opacity-50"
-                  >
-                    {remaking ? (
-                      <><Loader2 size={18} className="animate-spin" /> Remaking&hellip;</>
-                    ) : (
-                      <><Wand2 size={18} /> Remake for Vector</>
-                    )}
-                  </button>
-                )}
                 <button
                   onClick={handleReset}
                   className="inline-flex items-center gap-2 rounded-full border border-plum-wine-700 px-6 py-3.5 font-body text-base font-semibold text-plum-wine-700 transition-colors hover:bg-plum-wine-50"
