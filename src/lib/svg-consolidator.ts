@@ -446,10 +446,13 @@ export async function consolidateSVG(
     elements: ParsedElement[];
   }
   const NEAR_MATCH = 65; // merge nearly-identical colours (#000 vs #202325 = dist 60)
+  const MIN_PATH_LEN = 100; // skip tiny artifact paths (< 100 chars of path data)
   const layers: Layer[] = [];
   for (const el of elements) {
     const c = colorKey(el);
     if (c === "none") continue;
+    // Skip tiny artifact paths — design-tool debris, not real elements
+    if (el.d.length < MIN_PATH_LEN) continue;
     const prev = layers[layers.length - 1];
     // Merge with previous layer if exact match OR very close colour
     const isMatch = prev && (
