@@ -253,6 +253,19 @@ export default function Home() {
     setConsolidatedLayers(consolidated.layers);
   }, [consolidatedSVG, consolidatedLayers, result]);
 
+  const handleRemoveLayer = useCallback((color: string) => {
+    const currentSVG = consolidatedSVG ?? result?.svg ?? "";
+    if (!currentSVG) return;
+    const removed = removeLayerFromSVG(currentSVG, color);
+    if (!removed) return;
+    setUndoStack((prev) => [
+      ...prev,
+      { svg: consolidatedSVG, layers: consolidatedLayers },
+    ]);
+    setConsolidatedSVG(removed.svg);
+    setConsolidatedLayers(removed.layers);
+  }, [consolidatedSVG, consolidatedLayers, result]);
+
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
@@ -567,10 +580,10 @@ export default function Home() {
                       {activeLayers.map((layer, i) => (
                         <div
                           key={i}
-                          className="flex items-center gap-2.5 rounded-xl bg-alabaster px-4 py-2.5 font-body text-sm"
+                          className="group flex items-center gap-2 rounded-xl bg-alabaster px-3 py-2 font-body text-sm"
                         >
                           <span
-                            className="inline-block h-5 w-5 rounded-full border border-neutral-300 shadow-sm"
+                            className="inline-block h-4 w-4 shrink-0 rounded-full border border-neutral-300 shadow-sm"
                             style={{
                               backgroundColor:
                                 layer.color === "none"
@@ -581,9 +594,18 @@ export default function Home() {
                           <span className="font-medium text-plum-wine-800">
                             {layer.name}
                           </span>
-                          <span className="rounded-full bg-plum-wine-50 px-2 py-0.5 text-xs text-plum-wine-500">
+                          <span className="rounded-full bg-plum-wine-50 px-1.5 py-0.5 text-[10px] text-plum-wine-500">
                             {layer.pathCount}
                           </span>
+                          {outputMode === "color" && (
+                            <button
+                              onClick={() => handleRemoveLayer(layer.color)}
+                              className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-200 hover:text-neutral-600 group-hover:opacity-100"
+                              title="Remove this layer"
+                            >
+                              &times;
+                            </button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -799,3 +821,34 @@ function consolidateSVGLayers(svgString: string): { svg: string; layers: LayerIn
   return { svg, layers };
 }
 
+function removeLayerFromSVG(svgString: string, colorToRemove: string): { svg: string; layers: LayerInfo[] } | null {
+  const pathRegex = /<path\b([^>]*)\/?>|<path\b([^>]*)>[^<]*<\/path>/gi;
+  const paths: Array<{ fill: string; d: string }> = [];
+  let match;
+  while ((match = pathRegex.exec(svgString)) !== null) {
+    const attrs = match[1] || match[2] || "";
+    const fill = attrs.match(/fill="([^"]+)"/)?.[1]?.toLowerCase() || "#000000";
+    const d = attrs.match(/d="([^"]*)"/)?.[1] || "";
+    paths.push({ fill, d });
+  }
+
+  const filtered = paths.filter((p) => p.fill !== colorToRemove.toLowerCase());
+  if (filtered.length === 0) return null;
+
+  const viewBox = svgString.match(/viewBox="([^"]*)"/)?.[1] || "0 0 100 100";
+  const gTransform = svgString.match(/<g[^>]*transform="([^"]*)"/)?.[1];
+  const pathStrings = filtered.map(
+    (p) => `<path d="${p.d}" fill="${p.fill}" fill-rule="evenodd"/>`
+  );
+  const inner = pathStrings.join("\n");
+  const wrapped = gTransform ? `<g transform="${gTransform}">\n${inner}\n</g>` : inner;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${wrapped}\n</svg>`;
+
+  const layers = filtered.map((p) => ({
+    name: `Layer (${p.fill})`,
+    color: p.fill,
+    pathCount: 1,
+  }));
+
+  return { svg, layers };
+}
