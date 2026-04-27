@@ -405,6 +405,35 @@ export async function traceImage(
           console.error("[simplified] AI grouping failed:", err);
         }
 
+        // Fallback if AI failed: group by pixel-sampled colour
+        if (aiGroups.length < 2) {
+          console.log("[simplified] Using pixel-colour fallback");
+          const fgRgb = foreground.map((c) => hexToRgb(c));
+          const colorBuckets = new Map<string, number[]>();
+          for (let fi = 0; fi < fillIslands.length; fi++) {
+            const isl = fillIslands[fi];
+            const px = Math.max(0, Math.min(width - 1, Math.round(isl.cx)));
+            const py = Math.max(0, Math.min(height - 1, Math.round(isl.cy)));
+            const pi = (py * width + px) * ch;
+            const r = data[pi], g = data[pi + 1], b = data[pi + 2];
+            let bestC = foreground[0];
+            let bestD = Infinity;
+            for (let j = 0; j < fgRgb.length; j++) {
+              const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
+              if (d < bestD) { bestD = d; bestC = foreground[j]; }
+            }
+            if (!colorBuckets.has(bestC)) colorBuckets.set(bestC, []);
+            colorBuckets.get(bestC)!.push(fi);
+          }
+          if (colorBuckets.size >= 2) {
+            aiGroups = [...colorBuckets.entries()].map(([color, idxs]) => ({
+              name: `Layer (${color})`,
+              color,
+              islands: idxs,
+            }));
+          }
+        }
+
         if (aiGroups.length >= 2) {
           // Build compound paths per AI group
           const simPaths: string[] = [];
