@@ -459,6 +459,21 @@ export async function consolidateSVG(
   for (const el of elements) {
     const c = colorKey(el);
     if (c === "none") continue;
+
+    // Skip degenerate/zero-area paths (design-tool artifacts).
+    // Uses bounding box area — catches invisible point/line artifacts
+    // while keeping legitimate small shapes like circles.
+    const nums = [...el.d.matchAll(/-?[\d.]+/g)].map(Number);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (let i = 0; i < nums.length - 1; i += 2) {
+      if (isFinite(nums[i]) && isFinite(nums[i + 1])) {
+        if (nums[i] < minX) minX = nums[i];
+        if (nums[i] > maxX) maxX = nums[i];
+        if (nums[i + 1] < minY) minY = nums[i + 1];
+        if (nums[i + 1] > maxY) maxY = nums[i + 1];
+      }
+    }
+    if ((maxX - minX) * (maxY - minY) < 1) continue; // zero-area artifact
     const prev = layers[layers.length - 1];
     // Merge with previous layer if exact match OR very close colour
     const isMatch = prev && (
