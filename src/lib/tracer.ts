@@ -373,13 +373,16 @@ export async function traceImage(
         pixColorMap[pi] = bestIdx;
       }
 
-      // Step 2: for each subpath, find bounding box center and sample
-      const colorBuckets = new Map<string, string[]>();
+      // Step 2: for each subpath, find bounding box center, sample colour.
+      // If the center is on background (hole/transparent), it's a counter
+      // shape — defer it and assign to its nearest coloured neighbour.
+      interface SpInfo { sp: string; bcx: number; bcy: number; color: string | null }
+      const spInfos: SpInfo[] = [];
+
       for (const sp of subpaths) {
         const nums = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
         if (nums.length < 4) continue;
 
-        // Compute bounding box
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         for (let i = 0; i < nums.length - 1; i += 2) {
           if (isFinite(nums[i]) && isFinite(nums[i + 1])) {
@@ -390,16 +393,46 @@ export async function traceImage(
           }
         }
 
-        // Sample at bounding box center
         const bcx = Math.round((minX + maxX) / 2);
         const bcy = Math.round((minY + maxY) / 2);
         const px = Math.max(0, Math.min(width - 1, bcx));
         const py = Math.max(0, Math.min(height - 1, bcy));
-        const idx = pixColorMap[py * width + px];
-        const color = idx < foreground.length ? foreground[idx] : foreground[0];
+        const pidx = py * width + px;
 
-        if (!colorBuckets.has(color)) colorBuckets.set(color, []);
-        colorBuckets.get(color)!.push(sp);
+        // Check if this is a hole (center on background/transparent)
+        const onBackground = reallyHasAlpha
+          ? alphaMask[pidx] === 0
+          : pixColorMap[pidx] === 255;
+
+        if (onBackground) {
+          // Hole subpath — defer colour assignment
+          spInfos.push({ sp, bcx, bcy, color: null });
+        } else {
+          const idx = pixColorMap[pidx];
+          const color = idx < foreground.length ? foreground[idx] : foreground[0];
+          spInfos.push({ sp, bcx, bcy, color });
+        }
+      }
+
+      // Assign deferred holes to their nearest coloured neighbour
+      const coloured = spInfos.filter((s) => s.color !== null);
+      for (const si of spInfos) {
+        if (si.color !== null) continue;
+        let nearest = coloured[0];
+        let nearestD = Infinity;
+        for (const c of coloured) {
+          const d = (si.bcx - c.bcx) ** 2 + (si.bcy - c.bcy) ** 2;
+          if (d < nearestD) { nearestD = d; nearest = c; }
+        }
+        if (nearest) si.color = nearest.color;
+      }
+
+      // Build colour buckets
+      const colorBuckets = new Map<string, string[]>();
+      for (const si of spInfos) {
+        const c = si.color ?? foreground[0];
+        if (!colorBuckets.has(c)) colorBuckets.set(c, []);
+        colorBuckets.get(c)!.push(si.sp);
       }
 
       // Step 3: compound each colour group
