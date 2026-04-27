@@ -400,9 +400,9 @@ export async function traceImage(
         color: color,
         background: "transparent",
         turdSize: 100,
-        // optTolerance: curve-fitting tolerance. Higher = smoother.
-        // 1.5 balances crisp detail with clean curves for cutting.
-        optTolerance: 1.5,
+        // optTolerance: curve-fitting tolerance. Lower = crisper edges.
+        // 0.8 gives sharp detail without pixel-level jaggedness.
+        optTolerance: 0.8,
       });
 
       // Pull <path> elements out of potrace's SVG
