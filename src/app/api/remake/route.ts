@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
+import Replicate from "replicate";
 
-export const maxDuration = 30;
+export const maxDuration = 120;
+
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,109 +22,67 @@ export async function POST(request: NextRequest) {
 
     const rawBuffer = Buffer.from(await file.arrayBuffer());
 
-    // Preprocessing pipeline to make the image vector-friendly:
-    // 1. Resize to working resolution
-    // 2. Median filter — smooths textures/noise while keeping edges sharp
-    // 3. Posterize — reduces to a small number of flat colour levels
-    // 4. Another median pass — cleans up posterization artifacts
-    //
-    // Result: same image, same subject, but flat simplified colours
-    // that trace cleanly. No AI generation, instant, free.
-    // Step 1: Flatten transparency to white, then detect and replace
-    // any solid-colour background (black, colored, etc.) with white.
+    // ── Step 1: Remove background with rembg ────────────────────
+    // Proper AI background removal — handles fur, hair, complex
+    // edges. Returns a transparent PNG of just the subject.
     const resized = await sharp(rawBuffer)
-      .resize(1500, 1500, { fit: "inside", withoutEnlargement: true })
-      .flatten({ background: "#ffffff" })
-      .toBuffer();
-
-    // Detect background by sampling edge pixels
-    const { data, info } = await sharp(resized)
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const { width, height } = info;
-    const ch = info.channels;
-
-    const edgeCounts = new Map<string, number>();
-    for (let i = 0; i < data.length; i += ch) {
-      const pi = i / ch;
-      const px = pi % width;
-      const py = Math.floor(pi / width);
-      if (px >= 3 && px < width - 3 && py >= 3 && py < height - 3) continue;
-      const hex = `${data[i]},${data[i + 1]},${data[i + 2]}`;
-      edgeCounts.set(hex, (edgeCounts.get(hex) || 0) + 1);
-    }
-    const edgeBg = [...edgeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "255,255,255";
-    const [bgR, bgG, bgB] = edgeBg.split(",").map(Number);
-
-    // Replace background colour with white (threshold distance 60)
-    const isWhite = bgR > 240 && bgG > 240 && bgB > 240;
-    if (!isWhite) {
-      for (let i = 0; i < data.length; i += ch) {
-        const dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
-        if (Math.sqrt(dr * dr + dg * dg + db * db) < 60) {
-          data[i] = 255;
-          data[i + 1] = 255;
-          data[i + 2] = 255;
-        }
-      }
-    }
-
-    const flattened = await sharp(data, { raw: { width, height, channels: ch } })
+      .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
       .png()
       .toBuffer();
 
-    // Step 2: Median filter on the already-white-bg image
+    const rembgOutput = await replicate.run(
+      "cjwbw/rembg:fb8af171cfa1616ddcf1242c093f9c46bcada5ad4cf6f2fbe8b81b330ec5c003",
+      {
+        input: {
+          image: `data:image/png;base64,${resized.toString("base64")}`,
+        },
+      }
+    );
+
+    // rembg returns a URL or ReadableStream
+    let bgRemovedBuffer: Buffer;
+    if (typeof rembgOutput === "string") {
+      const resp = await fetch(rembgOutput);
+      bgRemovedBuffer = Buffer.from(await resp.arrayBuffer());
+    } else if (rembgOutput instanceof ReadableStream) {
+      const reader = rembgOutput.getReader();
+      const chunks: Uint8Array[] = [];
+      let done = false;
+      while (!done) {
+        const { value, done: d } = await reader.read();
+        if (value) chunks.push(value);
+        done = d;
+      }
+      bgRemovedBuffer = Buffer.concat(chunks);
+    } else {
+      const resp = await fetch(String(rembgOutput));
+      bgRemovedBuffer = Buffer.from(await resp.arrayBuffer());
+    }
+
+    // ── Step 2: Flatten to white + posterize ─────────────────────
+    // Now we have a clean transparent PNG of just the subject.
+    // Flatten transparency to white, then posterize to flat colours.
+    const flattened = await sharp(bgRemovedBuffer)
+      .flatten({ background: "#ffffff" })
+      .png()
+      .toBuffer();
+
     const smoothed = await sharp(flattened)
       .median(5)
       .png({ colours: 8, dither: 0 })
       .toBuffer();
 
-    // Step 3: Clean up posterization edges
-    const postCleaned = await sharp(smoothed)
+    const cleaned = await sharp(smoothed)
       .median(3)
       .png()
       .toBuffer();
 
-    // Step 4: Replace background AGAIN — posterization may have
-    // shifted white to off-white/beige. Re-detect edges and force white.
-    const { data: finalData, info: finalInfo } = await sharp(postCleaned)
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const fw = finalInfo.width, fh = finalInfo.height, fc = finalInfo.channels;
-
-    const finalEdgeCounts = new Map<string, number>();
-    for (let i = 0; i < finalData.length; i += fc) {
-      const pi = i / fc;
-      const px = pi % fw, py = Math.floor(pi / fw);
-      if (px >= 3 && px < fw - 3 && py >= 3 && py < fh - 3) continue;
-      const key = `${finalData[i]},${finalData[i + 1]},${finalData[i + 2]}`;
-      finalEdgeCounts.set(key, (finalEdgeCounts.get(key) || 0) + 1);
-    }
-    const finalBg = [...finalEdgeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "255,255,255";
-    const [fbR, fbG, fbB] = finalBg.split(",").map(Number);
-    const finalIsWhite = fbR > 240 && fbG > 240 && fbB > 240;
-    if (!finalIsWhite) {
-      for (let i = 0; i < finalData.length; i += fc) {
-        const dr = finalData[i] - fbR, dg = finalData[i + 1] - fbG, db = finalData[i + 2] - fbB;
-        if (Math.sqrt(dr * dr + dg * dg + db * db) < 40) {
-          finalData[i] = 255;
-          finalData[i + 1] = 255;
-          finalData[i + 2] = 255;
-        }
-      }
-    }
-
-    const cleaned = await sharp(finalData, { raw: { width: fw, height: fh, channels: fc } })
-      .png()
-      .toBuffer();
-
-    // Return as data URI so the client can use it directly
     const dataUri = `data:image/png;base64,${cleaned.toString("base64")}`;
 
     return NextResponse.json({ success: true, imageUrl: dataUri });
   } catch (err: unknown) {
     const message =
-      err instanceof Error ? err.message : "Remake failed.";
+      err instanceof Error ? err.message : "Simplify failed.";
     console.error("Remake API error:", err);
     return NextResponse.json(
       { success: false, error: message },
