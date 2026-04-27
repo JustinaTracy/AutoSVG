@@ -360,16 +360,33 @@ export async function traceImage(
 
       const islands: Island[] = [];
       for (const sp of subpaths) {
+        // First point = on the boundary (for colour sampling later)
         const firstCoords = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
         if (!firstCoords) continue;
         const cx = parseFloat(firstCoords[1]);
         const cy = parseFloat(firstCoords[2]);
-        const px0 = Math.max(0, Math.min(width - 1, Math.round(cx)));
-        const py0 = Math.max(0, Math.min(height - 1, Math.round(cy)));
-        const pixIdx0 = py0 * width + px0;
+
+        // AVERAGE center = inside the shape (for hole detection).
+        // For a letter counter (inside P, e, a), the average center
+        // falls inside the hole (transparent), while the first point
+        // is on the boundary (inside the opaque letter body).
+        const allNums = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
+        let sumX = 0, sumY = 0, n = 0;
+        for (let i = 0; i < allNums.length - 1; i += 2) {
+          if (isFinite(allNums[i]) && isFinite(allNums[i + 1])) {
+            sumX += allNums[i]; sumY += allNums[i + 1]; n++;
+          }
+        }
+        const avgX = n > 0 ? Math.round(sumX / n) : Math.round(cx);
+        const avgY = n > 0 ? Math.round(sumY / n) : Math.round(cy);
+        const hpx = Math.max(0, Math.min(width - 1, avgX));
+        const hpy = Math.max(0, Math.min(height - 1, avgY));
+        const holeIdx = hpy * width + hpx;
+
         const isHole = reallyHasAlpha
-          ? alphaMask[pixIdx0] === 0
-          : silMask[pixIdx0] >= 128;
+          ? alphaMask[holeIdx] === 0
+          : silMask[holeIdx] >= 128;
+
         islands.push({ sp, cx, cy, isHole });
       }
 
