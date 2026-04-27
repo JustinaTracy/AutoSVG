@@ -1,0 +1,1 @@
+- [Silhouette frozen](feedback_silhouette_frozen.md) — Never modify silhouette tracing code without explicit permission

@@ -17,8 +17,6 @@ import {
   Scissors,
   Layers,
   Sparkles,
-  Wand2,
-  Loader2,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -93,7 +91,8 @@ export default function Home() {
   const [stepIndex, setStepIndex] = useState(0);
   const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
   const [aiDisabled, setAiDisabled] = useState(false);
-  const [remaking, setRemaking] = useState(false);
+  const [consolidatedSVG, setConsolidatedSVG] = useState<string | null>(null);
+  const [consolidatedLayers, setConsolidatedLayers] = useState<LayerInfo[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -111,7 +110,7 @@ export default function Home() {
   const activeSVG =
     outputMode === "silhouette" && result?.silhouetteSVG
       ? result.silhouetteSVG
-      : result?.svg ?? "";
+      : consolidatedSVG ?? result?.svg ?? "";
 
   const svgBlobUrl = useMemo(() => {
     if (!activeSVG) return "";
@@ -143,6 +142,8 @@ export default function Home() {
     setResult(null);
     setError("");
     setOutputMode("color");
+    setConsolidatedSVG(null);
+    setConsolidatedLayers(null);
     setStatus("processing");
 
     // Build original preview
@@ -231,71 +232,18 @@ export default function Home() {
     setOriginalPreview("");
     setResult(null);
     setError("");
-    setRemaking(false);
+    setConsolidatedSVG(null);
+    setConsolidatedLayers(null);
   }, []);
 
-  const handleRemake = useCallback(async () => {
-    if (!file) return;
-    setRemaking(true);
-
-    // Resize for Replicate if needed (same client-side resize logic)
-    let uploadFile: File | Blob = file;
-    if (file.type !== "image/svg+xml" && file.size > 3 * 1024 * 1024) {
-      try {
-        uploadFile = await resizeImageClientSide(file);
-      } catch {
-        // Use original
-      }
-    }
-
-    const body = new FormData();
-    body.append("file", uploadFile);
-
-    try {
-      const res = await fetch("/api/remake", { method: "POST", body });
-      const data = await res.json();
-
-      if (data.success && data.imageUrl) {
-        // Fetch the remade image, create a File from it, and process it
-        const imgRes = await fetch(data.imageUrl);
-        const imgBlob = await imgRes.blob();
-        const remadeFile = new File([imgBlob], "remade.png", { type: "image/png" });
-
-        // Set it as the new file and re-process
-        setFile(remadeFile);
-        setResult(null);
-        setOutputMode("color");
-        setStatus("processing");
-        setRemaking(false);
-
-        // Build preview
-        const reader = new FileReader();
-        reader.onload = (e) => setOriginalPreview(e.target?.result as string);
-        reader.readAsDataURL(remadeFile);
-
-        // Upload to process
-        const processBody = new FormData();
-        processBody.append("file", remadeFile);
-        if (aiDisabled) processBody.append("noai", "1");
-
-        const processRes = await fetch("/api/process", { method: "POST", body: processBody });
-        const processData = await processRes.json();
-        if (processData.success) {
-          setResult(processData);
-          setStatus("done");
-        } else {
-          setError(processData.error || "Processing remade image failed.");
-          setStatus("error");
-        }
-      } else {
-        setError(data.error || "Remake failed.");
-        setRemaking(false);
-      }
-    } catch {
-      setError("Failed to reach the remake server.");
-      setRemaking(false);
-    }
-  }, [file, aiDisabled]);
+  const handleConsolidate = useCallback(() => {
+    const currentSVG = consolidatedSVG ?? result?.svg ?? "";
+    if (!currentSVG) return;
+    const consolidated = consolidateSVGLayers(currentSVG);
+    if (!consolidated) return;
+    setConsolidatedSVG(consolidated.svg);
+    setConsolidatedLayers(consolidated.layers);
+  }, [consolidatedSVG, result]);
 
   /* ── Render ───────────────────────────────────────────────── */
 
@@ -434,15 +382,6 @@ export default function Home() {
                     <h3 className="font-heading text-lg text-plum-wine-900">
                       Original
                     </h3>
-                    {result.analysis.originalType !== "svg" && (
-                      <button
-                        onClick={handleRemake}
-                        disabled={remaking}
-                        className="font-body text-xs font-medium text-plum-wine-500 underline decoration-plum-wine-300 underline-offset-2 transition-colors hover:text-plum-wine-700 disabled:opacity-50 disabled:no-underline"
-                      >
-                        {remaking ? "Simplifying…" : "Simplify for Cutting"}
-                      </button>
-                    )}
                   </div>
                   <div className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100 p-4">
                     {originalPreview && (
@@ -522,43 +461,54 @@ export default function Home() {
                   <p className="font-body text-sm text-plum-wine-600">
                     Traced as a solid black silhouette outline of the entire design.
                   </p>
-                ) : result.changelog && result.changelog.length > 0 ? (
-                  <ul className="space-y-2">
-                    {result.changelog.map((entry, i) => (
-                      <li
-                        key={i}
-                        className="flex items-start gap-2.5 font-body text-sm"
-                      >
-                        <span
-                          className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-white text-[10px] font-bold ${
-                            entry.action === "fixed"
-                              ? "bg-sage-gray-400"
-                              : entry.action === "removed"
-                                ? "bg-dusty-rose-300"
-                                : entry.action === "consolidated"
-                                  ? "bg-plum-wine-500"
-                                  : entry.action === "warning"
-                                    ? "bg-lemon-500"
-                                    : "bg-neutral-400"
-                          }`}
-                        >
-                          {entry.action === "fixed"
-                            ? "F"
-                            : entry.action === "removed"
-                              ? "R"
-                              : entry.action === "consolidated"
-                                ? "C"
-                                : entry.action === "warning"
-                                  ? "!"
-                                  : "i"}
-                        </span>
-                        <span className="text-plum-wine-800">
-                          {entry.detail}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+                ) : (
+                  <>
+                    {consolidatedSVG && (
+                      <p className="mb-2 font-body text-sm font-medium text-plum-wine-700">
+                        Layers consolidated: merged closest-coloured layers to reduce from{" "}
+                        {result.analysis.layers?.length ?? 0} to{" "}
+                        {consolidatedLayers?.length ?? 0} layer(s).
+                      </p>
+                    )}
+                    {result.changelog && result.changelog.length > 0 ? (
+                      <ul className="space-y-2">
+                        {result.changelog.map((entry, i) => (
+                          <li
+                            key={i}
+                            className="flex items-start gap-2.5 font-body text-sm"
+                          >
+                            <span
+                              className={`mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-white text-[10px] font-bold ${
+                                entry.action === "fixed"
+                                  ? "bg-sage-gray-400"
+                                  : entry.action === "removed"
+                                    ? "bg-dusty-rose-300"
+                                    : entry.action === "consolidated"
+                                      ? "bg-plum-wine-500"
+                                      : entry.action === "warning"
+                                        ? "bg-lemon-500"
+                                        : "bg-neutral-400"
+                              }`}
+                            >
+                              {entry.action === "fixed"
+                                ? "F"
+                                : entry.action === "removed"
+                                  ? "R"
+                                  : entry.action === "consolidated"
+                                    ? "C"
+                                    : entry.action === "warning"
+                                      ? "!"
+                                      : "i"}
+                            </span>
+                            <span className="text-plum-wine-800">
+                              {entry.detail}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
+                )}
               </div>
 
               {/* Layers — mode-aware */}
@@ -566,14 +516,37 @@ export default function Home() {
                 const activeLayers =
                   outputMode === "silhouette"
                     ? [{ name: "Silhouette", color: "#000000", pathCount: 1 }]
-                    : result.analysis.layers ?? [];
+                    : consolidatedLayers ?? result.analysis.layers ?? [];
                 if (activeLayers.length === 0) return null;
                 return (
                   <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                    <h3 className="mb-3 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
-                      <Layers size={16} className="text-plum-wine-500" />
-                      Cut Layers ({activeLayers.length})
-                  </h3>
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="flex items-center gap-2 font-heading text-lg text-plum-wine-900">
+                        <Layers size={16} className="text-plum-wine-500" />
+                        Cut Layers ({activeLayers.length})
+                      </h3>
+                      {outputMode === "color" && activeLayers.length >= 2 && (
+                        <div className="flex items-center gap-3">
+                          {consolidatedSVG && (
+                            <button
+                              onClick={() => {
+                                setConsolidatedSVG(null);
+                                setConsolidatedLayers(null);
+                              }}
+                              className="font-body text-xs font-medium text-plum-wine-500 underline decoration-plum-wine-300 underline-offset-2 transition-colors hover:text-plum-wine-700"
+                            >
+                              Reset Layers
+                            </button>
+                          )}
+                          <button
+                            onClick={handleConsolidate}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-plum-wine-200 bg-plum-wine-50 px-3 py-1 font-body text-xs font-medium text-plum-wine-700 transition-colors hover:bg-plum-wine-100"
+                          >
+                            Consolidate Layers
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex flex-wrap gap-2">
                       {activeLayers.map((layer, i) => (
                         <div
@@ -735,5 +708,78 @@ async function resizeImageClientSide(file: File): Promise<Blob> {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * Merge the two closest-coloured layers in an SVG string.
+ * Returns the new SVG and layer info, or null if fewer than 2 paths.
+ */
+function consolidateSVGLayers(svgString: string): { svg: string; layers: LayerInfo[] } | null {
+  // Parse all paths
+  const pathRegex = /<path\b([^>]*)\/?>|<path\b([^>]*)>[^<]*<\/path>/gi;
+  const paths: Array<{ full: string; fill: string; d: string }> = [];
+  let match;
+  while ((match = pathRegex.exec(svgString)) !== null) {
+    const attrs = match[1] || match[2] || '';
+    const fill = attrs.match(/fill="([^"]+)"/)?.[1] || '#000000';
+    const d = attrs.match(/d="([^"]*)"/)?.[1] || '';
+    paths.push({ full: match[0], fill: fill.toLowerCase(), d });
+  }
+
+  if (paths.length < 2) return null;
+
+  // Find the two closest colours
+  const hexToRgb = (hex: string): [number, number, number] => {
+    const h = hex.replace('#', '');
+    return [
+      parseInt(h.substring(0, 2), 16) || 0,
+      parseInt(h.substring(2, 4), 16) || 0,
+      parseInt(h.substring(4, 6), 16) || 0,
+    ];
+  };
+
+  let minDist = Infinity;
+  let mergeI = 0, mergeJ = 1;
+  for (let i = 0; i < paths.length; i++) {
+    for (let j = i + 1; j < paths.length; j++) {
+      const a = hexToRgb(paths[i].fill);
+      const b = hexToRgb(paths[j].fill);
+      const dist = Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2);
+      if (dist < minDist) {
+        minDist = dist;
+        mergeI = i;
+        mergeJ = j;
+      }
+    }
+  }
+
+  // Merge j into i (keep i's colour if it has more path data)
+  const keepColour = paths[mergeI].d.length >= paths[mergeJ].d.length
+    ? paths[mergeI].fill
+    : paths[mergeJ].fill;
+  const mergedD = paths[mergeI].d + ' ' + paths[mergeJ].d;
+
+  // Build new paths array
+  const newPaths = paths.filter((_, idx) => idx !== mergeI && idx !== mergeJ);
+  newPaths.splice(mergeI, 0, {
+    full: '',
+    fill: keepColour,
+    d: mergedD
+  });
+
+  // Rebuild SVG
+  const viewBox = svgString.match(/viewBox="([^"]*)"/)?.[1] || '0 0 100 100';
+  const pathStrings = newPaths.map(p =>
+    `<path d="${p.d}" fill="${p.fill}" fill-rule="evenodd"/>`
+  );
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${pathStrings.join('\n')}\n</svg>`;
+
+  const layers = newPaths.map(p => ({
+    name: `Layer (${p.fill})`,
+    color: p.fill,
+    pathCount: 1,
+  }));
+
+  return { svg, layers };
 }
 
