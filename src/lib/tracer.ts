@@ -97,6 +97,7 @@ export interface TraceOptions {
   recommendedColors: number;
   threshold?: number;
   backgroundColor?: string;
+  disableAI?: boolean;
 }
 
 export interface TraceResult {
@@ -338,7 +339,7 @@ export async function traceImage(
   // solid fill layer (holes filled) or a detail layer (holes preserved)?
   let strategies: Map<string, LayerStrategy> = new Map();
   let imageDescription = "";
-  {
+  if (!options.disableAI) {
     const thumbBuf = await sharp(preprocessed)
       .resize(600, 600, { fit: "inside", withoutEnlargement: true })
       .jpeg({ quality: 60 })

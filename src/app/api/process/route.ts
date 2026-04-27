@@ -20,6 +20,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
+    const noAI = formData.get("noai") === "1";
 
     if (!file) {
       return NextResponse.json(
@@ -110,6 +111,7 @@ export async function POST(request: NextRequest) {
       const traceResult = await traceImage(buffer, {
         recommendedColors: 4,
         backgroundColor: "#ffffff",
+        disableAI: noAI,
       });
 
       // Self-repair any remaining issues, then validate

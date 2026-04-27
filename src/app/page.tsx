@@ -90,6 +90,7 @@ export default function Home() {
   const [dragActive, setDragActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
+  const [aiDisabled, setAiDisabled] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -160,6 +161,7 @@ export default function Home() {
     // Upload
     const body = new FormData();
     body.append("file", uploadFile);
+    if (aiDisabled) body.append("noai", "1");
 
     try {
       const res = await fetch("/api/process", { method: "POST", body });
@@ -247,6 +249,16 @@ export default function Home() {
               Cut-ready SVG converter
             </p>
           </div>
+          <button
+            onClick={() => setAiDisabled((v) => !v)}
+            className={`ml-auto rounded-full px-3 py-1 font-body text-xs font-medium transition-colors ${
+              aiDisabled
+                ? "bg-sunset-red-500 text-white"
+                : "bg-neutral-100 text-neutral-400 hover:text-neutral-600"
+            }`}
+          >
+            AI {aiDisabled ? "OFF" : "ON"}
+          </button>
         </div>
       </header>
 
