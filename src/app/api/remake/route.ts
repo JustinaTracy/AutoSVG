@@ -61,18 +61,21 @@ export async function POST(request: NextRequest) {
       // GPT-4o failed — use generic description
     }
 
-    // Step 2: Run SDXL ControlNet Canny — edges from the original,
-    // style from the prompt. Canny preserves the exact outlines.
+    // Step 2: Use SDXL img2img (no ControlNet) — gives the model
+    // freedom to remake the image in a vector-friendly style while
+    // keeping the same subject. prompt_strength controls how much
+    // it departs from the original (0.7 = mostly follows prompt).
     const output = await replicate.run(
-      "lucataco/sdxl-controlnet:06d6fae3b75ab68a28cd2900afa6033166910dd09fd9751047043a5bbb4c184b",
+      "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc",
       {
         input: {
           image: dataUri,
-          prompt: `Simple flat color cartoon of ${description}. Cel-shaded, 2D, solid flat color fills, crisp clean edges, bold outlines, minimal detail, SVG style, die-cut ready, white background`,
+          prompt: `Simple flat color vector illustration of ${description}, solid flat colors only, 2D, clean bold outlines, no gradients, no shading, no shadows, no texture, plain white background, die-cut design, SVG ready, minimal detail, clipart style`,
           negative_prompt:
-            "gradient, shadow, texture, 3d, realistic, photographic, shading, halftone, watercolor, painterly, blurry, noisy, sticker, border, frame, soft edges, smooth shading, depth, lighting",
-          condition_scale: 0.5,
+            "gradient, shadow, texture, 3d, realistic, photographic, shading, halftone, watercolor, painterly, blurry, noisy, border, frame, soft edges, depth, lighting, pink background, colored background",
+          prompt_strength: 0.7,
           num_inference_steps: 30,
+          guidance_scale: 12,
         },
       }
     );
