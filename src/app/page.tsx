@@ -266,6 +266,26 @@ export default function Home() {
     setConsolidatedLayers(removed.layers);
   }, [consolidatedSVG, consolidatedLayers, result]);
 
+  const [dragSource, setDragSource] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+
+  const handleMergeLayers = useCallback((sourceIdx: number, targetIdx: number) => {
+    const currentSVG = consolidatedSVG ?? result?.svg ?? "";
+    if (!currentSVG || sourceIdx === targetIdx) return;
+    const activeLyrs = consolidatedLayers ?? result?.analysis.layers ?? [];
+    const sourceColor = activeLyrs[sourceIdx]?.color;
+    const targetColor = activeLyrs[targetIdx]?.color;
+    if (!sourceColor || !targetColor) return;
+    const merged = mergeLayersInSVG(currentSVG, sourceColor, targetColor);
+    if (!merged) return;
+    setUndoStack((prev) => [
+      ...prev,
+      { svg: consolidatedSVG, layers: consolidatedLayers },
+    ]);
+    setConsolidatedSVG(merged.svg);
+    setConsolidatedLayers(merged.layers);
+  }, [consolidatedSVG, consolidatedLayers, result]);
+
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
     const prev = undoStack[undoStack.length - 1];
@@ -580,7 +600,31 @@ export default function Home() {
                       {activeLayers.map((layer, i) => (
                         <div
                           key={i}
-                          className="group flex items-center gap-2 rounded-xl bg-alabaster px-3 py-2 font-body text-sm"
+                          draggable={outputMode === "color"}
+                          onDragStart={() => setDragSource(i)}
+                          onDragEnd={() => { setDragSource(null); setDragOver(null); }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            if (dragSource !== null && dragSource !== i) setDragOver(i);
+                          }}
+                          onDragLeave={() => setDragOver(null)}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            if (dragSource !== null && dragSource !== i) {
+                              handleMergeLayers(dragSource, i);
+                            }
+                            setDragSource(null);
+                            setDragOver(null);
+                          }}
+                          className={`group flex items-center gap-2 rounded-xl px-3 py-2 font-body text-sm transition-all ${
+                            outputMode === "color" ? "cursor-grab active:cursor-grabbing" : ""
+                          } ${
+                            dragOver === i
+                              ? "ring-2 ring-plum-wine-500 bg-plum-wine-50 scale-105"
+                              : dragSource === i
+                                ? "opacity-50 bg-alabaster"
+                                : "bg-alabaster"
+                          }`}
                         >
                           <span
                             className="inline-block h-4 w-4 shrink-0 rounded-full border border-neutral-300 shadow-sm"
@@ -813,6 +857,75 @@ function consolidateSVGLayers(svgString: string): { svg: string; layers: LayerIn
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${pathStrings.join('\n')}\n</svg>`;
 
   const layers = newPaths.map(p => ({
+    name: `Layer (${p.fill})`,
+    color: p.fill,
+    pathCount: 1,
+  }));
+
+  return { svg, layers };
+}
+
+/**
+ * Merge source colour into target colour — source paths get recoloured
+ * to the target colour and combined into one compound path.
+ */
+function mergeLayersInSVG(
+  svgString: string,
+  sourceColor: string,
+  targetColor: string
+): { svg: string; layers: LayerInfo[] } | null {
+  const pathRegex = /<path\b([^>]*)\/?>|<path\b([^>]*)>[^<]*<\/path>/gi;
+  const paths: Array<{ fill: string; d: string }> = [];
+  let match;
+  while ((match = pathRegex.exec(svgString)) !== null) {
+    const attrs = match[1] || match[2] || "";
+    const fill = attrs.match(/fill="([^"]+)"/)?.[1]?.toLowerCase() || "#000000";
+    const d = attrs.match(/d="([^"]*)"/)?.[1] || "";
+    paths.push({ fill, d });
+  }
+
+  const src = sourceColor.toLowerCase();
+  const tgt = targetColor.toLowerCase();
+
+  // Merge: recolour source paths to target, combine d attributes
+  let targetD = "";
+  let sourceD = "";
+  const otherPaths: Array<{ fill: string; d: string }> = [];
+
+  for (const p of paths) {
+    if (p.fill === tgt) targetD += (targetD ? " " : "") + p.d;
+    else if (p.fill === src) sourceD += (sourceD ? " " : "") + p.d;
+    else otherPaths.push(p);
+  }
+
+  if (!targetD && !sourceD) return null;
+
+  // Combined path takes the TARGET colour
+  const mergedPath = { fill: tgt, d: (targetD + " " + sourceD).trim() };
+
+  // Rebuild: insert merged path where target was, keep others in order
+  const result: Array<{ fill: string; d: string }> = [];
+  let mergedInserted = false;
+  for (const p of paths) {
+    if (p.fill === tgt && !mergedInserted) {
+      result.push(mergedPath);
+      mergedInserted = true;
+    } else if (p.fill !== tgt && p.fill !== src) {
+      result.push(p);
+    }
+  }
+  if (!mergedInserted) result.push(mergedPath);
+
+  const viewBox = svgString.match(/viewBox="([^"]*)"/)?.[1] || "0 0 100 100";
+  const gTransform = svgString.match(/<g[^>]*transform="([^"]*)"/)?.[1];
+  const pathStrings = result.map(
+    (p) => `<path d="${p.d}" fill="${p.fill}" fill-rule="evenodd"/>`
+  );
+  const inner = pathStrings.join("\n");
+  const wrapped = gTransform ? `<g transform="${gTransform}">\n${inner}\n</g>` : inner;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">\n${wrapped}\n</svg>`;
+
+  const layers = result.map((p) => ({
     name: `Layer (${p.fill})`,
     color: p.fill,
     pathCount: 1,
