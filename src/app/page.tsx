@@ -77,8 +77,6 @@ interface ProcessResult {
   success: boolean;
   svg: string;
   silhouetteSVG?: string;
-  simplifiedSVG?: string;
-  simplifiedLayers?: LayerInfo[];
   analysis: Analysis;
   validation?: Validation;
   changelog?: ChangelogEntry[];
@@ -111,7 +109,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
-  const [outputMode, setOutputMode] = useState<"color" | "simplified" | "silhouette">("color");
+  const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -129,9 +127,7 @@ export default function Home() {
   const activeSVG =
     outputMode === "silhouette" && result?.silhouetteSVG
       ? result.silhouetteSVG
-      : outputMode === "simplified" && result?.simplifiedSVG
-        ? result.simplifiedSVG
-        : result?.svg ?? "";
+      : result?.svg ?? "";
 
   const svgBlobUrl = useMemo(() => {
     if (!activeSVG) return "";
@@ -238,7 +234,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const suffix = outputMode === "silhouette" ? "_silhouette" : outputMode === "simplified" ? "_simplified" : "_cut-ready";
+    const suffix = outputMode === "silhouette" ? "_silhouette" : "_cut-ready";
     a.download = `${file.name.replace(/\.[^.]+$/, "")}${suffix}.svg`;
     a.click();
     URL.revokeObjectURL(url);
@@ -443,7 +439,7 @@ export default function Home() {
                   </div>
 
                   {/* Output mode toggle */}
-                  {(result.silhouetteSVG || result.simplifiedSVG) && (
+                  {result.silhouetteSVG && (
                     <div className="mt-3 flex rounded-full border border-neutral-200 bg-neutral-100 p-0.5">
                       <button
                         onClick={() => setOutputMode("color")}
@@ -455,30 +451,16 @@ export default function Home() {
                       >
                         Full Color
                       </button>
-                      {result.simplifiedSVG && (
-                        <button
-                          onClick={() => setOutputMode("simplified")}
-                          className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
-                            outputMode === "simplified"
-                              ? "bg-plum-wine-700 text-white shadow-sm"
-                              : "text-plum-wine-600 hover:text-plum-wine-800"
-                          }`}
-                        >
-                          Simplified
-                        </button>
-                      )}
-                      {result.silhouetteSVG && (
-                        <button
-                          onClick={() => setOutputMode("silhouette")}
-                          className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
-                            outputMode === "silhouette"
-                              ? "bg-plum-wine-700 text-white shadow-sm"
-                              : "text-plum-wine-600 hover:text-plum-wine-800"
-                          }`}
-                        >
-                          Silhouette
-                        </button>
-                      )}
+                      <button
+                        onClick={() => setOutputMode("silhouette")}
+                        className={`flex-1 rounded-full px-3 py-1.5 font-body text-sm font-medium transition-colors ${
+                          outputMode === "silhouette"
+                            ? "bg-plum-wine-700 text-white shadow-sm"
+                            : "text-plum-wine-600 hover:text-plum-wine-800"
+                        }`}
+                      >
+                        Silhouette
+                      </button>
                     </div>
                   )}
                 </div>
@@ -493,10 +475,6 @@ export default function Home() {
                 {outputMode === "silhouette" ? (
                   <p className="font-body text-sm text-plum-wine-600">
                     Traced as a solid black silhouette outline of the entire design.
-                  </p>
-                ) : outputMode === "simplified" ? (
-                  <p className="font-body text-sm text-plum-wine-600">
-                    Silhouette broken into coloured islands matching the original design. Like-coloured islands compounded into {result.simplifiedLayers?.length ?? "a few"} layers.
                   </p>
                 ) : result.changelog && result.changelog.length > 0 ? (
                   <ul className="space-y-2">
@@ -542,9 +520,7 @@ export default function Home() {
                 const activeLayers =
                   outputMode === "silhouette"
                     ? [{ name: "Silhouette", color: "#000000", pathCount: 1 }]
-                    : outputMode === "simplified"
-                      ? result.simplifiedLayers ?? []
-                      : result.analysis.layers ?? [];
+                    : result.analysis.layers ?? [];
                 if (activeLayers.length === 0) return null;
                 return (
                   <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">

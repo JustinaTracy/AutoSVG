@@ -15,7 +15,7 @@
 
 import sharp from "sharp";
 import potrace from "potrace";
-import { analyzeLayerStrategyWithRetry, groupAndColorIslands, type LayerStrategy } from "./openai";
+import { analyzeLayerStrategyWithRetry, type LayerStrategy } from "./openai";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -102,8 +102,6 @@ export interface TraceOptions {
 export interface TraceResult {
   svg: string;
   silhouetteSVG?: string;
-  simplifiedSVG?: string;
-  simplifiedLayers?: Array<{ name: string; color: string; pathCount: number }>;
   description: string;
 }
 
@@ -335,129 +333,6 @@ export async function traceImage(
     foreground = clusterForeground(foreground, counts, MAX_LAYERS);
   }
 
-  // ── 5c. Simplified — break silhouette into coloured islands ──────
-  // Take the silhouette's subpaths ("islands"), colour each by sampling
-  // the original image, then compound like-coloured islands.
-  // Holes (transparent/bg centers) stay with their nearest fill island
-  // so evenodd cuts them correctly.
-  // Only available when there are 2+ fill islands (otherwise = silhouette).
-  let simplifiedSVG: string | undefined;
-  let simplifiedLayers: Array<{ name: string; color: string; pathCount: number }> = [];
-  if (silhouetteSVG) {
-    try {
-      console.log(`[simplified] Starting — foreground: ${foreground.length} colours, silhouette exists: ${!!silhouetteSVG}`);
-      // Get all subpaths from silhouette
-      const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
-      const subpaths = splitSubpaths(silD);
-
-      // Classify each subpath as fill-island or hole
-      // Two-step approach:
-      // 1. Build a per-pixel colour map from the quantized data (same
-      //    as full-colour trace — reliable ground truth)
-      // 2. For each subpath, find its BOUNDING BOX CENTER and sample
-      //    the colour map there to determine its colour
-      // 3. Group subpaths by colour, compound each group with evenodd
-
-      // Step 1: pixel colour map
-      const fgRgb = foreground.map((c) => hexToRgb(c));
-      const pixColorMap = new Uint8Array(totalPixels);
-      for (let i = 0; i < data.length; i += ch) {
-        const pi = i / ch;
-        if (reallyHasAlpha && !alphaMask[pi]) { pixColorMap[pi] = 255; continue; }
-        const r = data[i], g = data[i + 1], b = data[i + 2];
-        let bestIdx = 0, bestD = Infinity;
-        for (let j = 0; j < fgRgb.length; j++) {
-          const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
-          if (d < bestD) { bestD = d; bestIdx = j; }
-        }
-        pixColorMap[pi] = bestIdx;
-      }
-
-      // Step 2: for each subpath, find bounding box center, sample colour.
-      // If the center is on background (hole/transparent), it's a counter
-      // shape — defer it and assign to its nearest coloured neighbour.
-      interface SpInfo { sp: string; bcx: number; bcy: number; color: string | null }
-      const spInfos: SpInfo[] = [];
-
-      for (const sp of subpaths) {
-        const nums = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
-        if (nums.length < 4) continue;
-
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (let i = 0; i < nums.length - 1; i += 2) {
-          if (isFinite(nums[i]) && isFinite(nums[i + 1])) {
-            if (nums[i] < minX) minX = nums[i];
-            if (nums[i] > maxX) maxX = nums[i];
-            if (nums[i + 1] < minY) minY = nums[i + 1];
-            if (nums[i + 1] > maxY) maxY = nums[i + 1];
-          }
-        }
-
-        const bcx = Math.round((minX + maxX) / 2);
-        const bcy = Math.round((minY + maxY) / 2);
-        const px = Math.max(0, Math.min(width - 1, bcx));
-        const py = Math.max(0, Math.min(height - 1, bcy));
-        const pidx = py * width + px;
-
-        // Check if this is a hole (center on background/transparent)
-        const onBackground = reallyHasAlpha
-          ? alphaMask[pidx] === 0
-          : silMask[pidx] >= 128; // silMask: 255=bg, 0=fg
-
-        if (onBackground) {
-          // Hole subpath — defer colour assignment
-          spInfos.push({ sp, bcx, bcy, color: null });
-        } else {
-          const idx = pixColorMap[pidx];
-          const color = idx < foreground.length ? foreground[idx] : foreground[0];
-          spInfos.push({ sp, bcx, bcy, color });
-        }
-      }
-
-      // Assign deferred holes to their nearest coloured neighbour
-      const coloured = spInfos.filter((s) => s.color !== null);
-      for (const si of spInfos) {
-        if (si.color !== null) continue;
-        let nearest = coloured[0];
-        let nearestD = Infinity;
-        for (const c of coloured) {
-          const d = (si.bcx - c.bcx) ** 2 + (si.bcy - c.bcy) ** 2;
-          if (d < nearestD) { nearestD = d; nearest = c; }
-        }
-        if (nearest) si.color = nearest.color;
-      }
-
-      // Build colour buckets
-      const colorBuckets = new Map<string, string[]>();
-      for (const si of spInfos) {
-        const c = si.color ?? foreground[0];
-        if (!colorBuckets.has(c)) colorBuckets.set(c, []);
-        colorBuckets.get(c)!.push(si.sp);
-      }
-
-      // Step 3: compound each colour group
-      if (colorBuckets.size >= 2) {
-        const simPaths: string[] = [];
-        for (const [color, sps] of colorBuckets) {
-          if (sps.length === 0) continue;
-          simPaths.push(`<path d="${sps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
-        }
-        if (simPaths.length > 1) {
-          simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
-          simplifiedLayers = [...colorBuckets.entries()]
-            .filter(([, sps]) => sps.length > 0)
-            .map(([color, sps]) => ({
-              name: `Layer (${color})`,
-              color,
-              pathCount: sps.length,
-            }));
-        }
-      }
-    } catch {
-      // Simplified failed — skip
-    }
-  }
-
   // ── 6. AI layer strategy ────────────────────────────────────────
   // Ask GPT-4o to look at the image and decide per-colour: is this a
   // solid fill layer (holes filled) or a detail layer (holes preserved)?
@@ -590,7 +465,7 @@ export async function traceImage(
       (_, i) => pathSizes[i] === Infinity || pathSizes[i] >= maxSize * MIN_RATIO
     );
 
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, simplifiedSVG, simplifiedLayers: simplifiedLayers.length > 0 ? simplifiedLayers : undefined, description: imageDescription };
+    return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${cleaned.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
   }
 
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${pathElements.join("\n")}\n</svg>`, silhouetteSVG, description: imageDescription };
