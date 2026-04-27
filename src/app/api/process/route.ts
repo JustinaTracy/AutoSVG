@@ -95,7 +95,6 @@ export async function POST(request: NextRequest) {
           isMultiLayered: layers.length > 1,
           layers,
         },
-        validation,
         changelog,
       });
     }
@@ -150,7 +149,6 @@ export async function POST(request: NextRequest) {
           isMultiLayered: finalLayers.length > 1,
           layers: finalLayers,
         },
-        validation,
         changelog,
       });
     }

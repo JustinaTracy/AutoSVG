@@ -13,14 +13,10 @@ import {
   Upload,
   Download,
   RotateCcw,
-  Loader2,
-  CheckCircle,
   AlertTriangle,
   Scissors,
   Layers,
-  FileWarning,
   Sparkles,
-  Info,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -53,21 +49,6 @@ interface Analysis {
   complexity?: string;
 }
 
-interface ChecklistItem {
-  id: string;
-  label: string;
-  passed: boolean;
-  detail: string;
-  severity: "critical" | "warning" | "info";
-}
-
-interface Validation {
-  checklist: ChecklistItem[];
-  status: "pass" | "review" | "fail";
-  passCount: number;
-  totalCount: number;
-}
-
 interface ChangelogEntry {
   action: string;
   detail: string;
@@ -78,7 +59,6 @@ interface ProcessResult {
   svg: string;
   silhouetteSVG?: string;
   analysis: Analysis;
-  validation?: Validation;
   changelog?: ChangelogEntry[];
   error?: string;
 }
@@ -367,9 +347,6 @@ export default function Home() {
           {/* ── DONE: Results ─────────────────────────────────── */}
           {status === "done" && result && (
             <div className="flex flex-col gap-6">
-              {/* Status banner */}
-              <StatusBanner validation={result.validation} />
-
               {/* Previews */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 {/* Original */}
@@ -397,30 +374,9 @@ export default function Home() {
 
                 {/* Processed */}
                 <div className="rounded-2xl border border-plum-wine-200 bg-white p-6 shadow-sm ring-2 ring-plum-wine-100">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="font-heading text-lg text-plum-wine-900">
-                      Cut-Ready SVG
-                    </h3>
-                    {result.validation && (
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full px-3 py-1 font-body text-xs font-medium ${
-                          result.validation.status === "pass"
-                            ? "bg-sage-success-50 text-sage-success-500"
-                            : result.validation.status === "review"
-                              ? "bg-lemon-50 text-lemon-500"
-                              : "bg-sunset-red-50 text-sunset-red-500"
-                        }`}
-                      >
-                        {result.validation.status === "pass" ? (
-                          <><CheckCircle size={12} /> Ready</>
-                        ) : result.validation.status === "review" ? (
-                          <><AlertTriangle size={12} /> Review</>
-                        ) : (
-                          <><FileWarning size={12} /> Issues</>
-                        )}
-                      </span>
-                    )}
-                  </div>
+                  <h3 className="mb-3 font-heading text-lg text-plum-wine-900">
+                    Cut-Ready SVG
+                  </h3>
                   <div
                     className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-neutral-100 p-4"
                     style={{
@@ -556,71 +512,6 @@ export default function Home() {
                 );
               })()}
 
-              {/* Cuttability Checklist */}
-              {result.validation && (
-                <div className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm">
-                  <h3 className="mb-1 flex items-center gap-2 font-heading text-lg text-plum-wine-900">
-                    <Scissors size={16} className="text-plum-wine-500" />
-                    Cuttability Checklist
-                  </h3>
-                  <p className="mb-4 font-body text-xs text-plum-wine-400">
-                    {result.validation.passCount} of{" "}
-                    {result.validation.totalCount} checks passed
-                  </p>
-                  <ul className="space-y-1">
-                    {result.validation.checklist.map((item) => (
-                      <li
-                        key={item.id}
-                        className="flex items-start gap-2.5 rounded-xl px-3 py-2.5 transition-colors hover:bg-alabaster"
-                      >
-                        {item.passed ? (
-                          <CheckCircle
-                            size={18}
-                            className="mt-0.5 shrink-0 text-sage-gray-400"
-                          />
-                        ) : item.severity === "critical" ? (
-                          <FileWarning
-                            size={18}
-                            className="mt-0.5 shrink-0 text-sunset-red-500"
-                          />
-                        ) : item.severity === "warning" ? (
-                          <AlertTriangle
-                            size={18}
-                            className="mt-0.5 shrink-0 text-lemon-500"
-                          />
-                        ) : (
-                          <Info
-                            size={18}
-                            className="mt-0.5 shrink-0 text-plum-wine-300"
-                          />
-                        )}
-                        <div className="min-w-0">
-                          <p
-                            className={`font-body text-sm font-medium ${
-                              item.passed
-                                ? "text-plum-wine-700"
-                                : item.severity === "critical"
-                                  ? "text-sunset-red-600"
-                                  : "text-plum-wine-800"
-                            }`}
-                          >
-                            {item.label}
-                            {!item.passed && item.severity === "critical" && (
-                              <span className="ml-1.5 rounded-full bg-sunset-red-50 px-2 py-0.5 text-[10px] font-bold uppercase text-sunset-red-500">
-                                Critical
-                              </span>
-                            )}
-                          </p>
-                          <p className="font-body text-xs leading-relaxed text-plum-wine-400">
-                            {item.detail}
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
               {/* Action buttons */}
               <div className="flex flex-wrap justify-center gap-4">
                 <button
@@ -628,9 +519,7 @@ export default function Home() {
                   className="inline-flex items-center gap-2 rounded-full bg-plum-wine-700 px-8 py-3.5 font-body text-base font-semibold text-white shadow-sm transition-colors hover:bg-plum-wine-800"
                 >
                   <Download size={18} />
-                  {result.validation?.status === "review"
-                    ? "Download (Review Recommended)"
-                    : "Download Cut-Ready SVG"}
+                  Download Cut-Ready SVG
                 </button>
                 <button
                   onClick={handleReset}
@@ -758,58 +647,3 @@ async function resizeImageClientSide(file: File): Promise<Blob> {
   }
 }
 
-function StatusBanner({ validation }: { validation?: Validation }) {
-  if (!validation) return null;
-  const { status, passCount, totalCount } = validation;
-
-  if (status === "pass") {
-    return (
-      <div className="flex items-center gap-3 rounded-2xl bg-sage-success-50 px-6 py-4">
-        <CheckCircle size={22} className="shrink-0 text-sage-success-500" />
-        <div>
-          <p className="font-body text-sm font-semibold text-sage-gray-700">
-            Cut Ready — All {totalCount} checks passed
-          </p>
-          <p className="font-body text-xs text-sage-gray-400">
-            This file is optimised for Cricut and Silhouette machines.
-          </p>
-        </div>
-      </div>
-    );
-  }
-  if (status === "review") {
-    const warns = totalCount - passCount;
-    return (
-      <div className="flex items-center gap-3 rounded-2xl bg-lemon-50 px-6 py-4">
-        <AlertTriangle size={22} className="shrink-0 text-lemon-500" />
-        <div>
-          <p className="font-body text-sm font-semibold text-plum-wine-800">
-            Review Recommended — {passCount}/{totalCount} checks passed
-          </p>
-          <p className="font-body text-xs text-plum-wine-500">
-            {warns} non-critical issue{warns !== 1 ? "s" : ""} found.
-            The file should cut but review the checklist below.
-          </p>
-        </div>
-      </div>
-    );
-  }
-  // fail
-  const criticals = validation.checklist.filter(
-    (i) => !i.passed && i.severity === "critical"
-  ).length;
-  return (
-    <div className="flex items-center gap-3 rounded-2xl bg-sunset-red-50 px-6 py-4">
-      <FileWarning size={22} className="shrink-0 text-sunset-red-500" />
-      <div>
-        <p className="font-body text-sm font-semibold text-sunset-red-600">
-          Not Cut Ready — {criticals} critical issue
-          {criticals !== 1 ? "s" : ""}
-        </p>
-        <p className="font-body text-xs text-plum-wine-500">
-          Fix the critical issues below before sending to your cutting machine.
-        </p>
-      </div>
-    </div>
-  );
-}
