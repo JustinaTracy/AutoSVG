@@ -440,7 +440,7 @@ export default function Home() {
                         disabled={remaking}
                         className="font-body text-xs font-medium text-plum-wine-500 underline decoration-plum-wine-300 underline-offset-2 transition-colors hover:text-plum-wine-700 disabled:opacity-50 disabled:no-underline"
                       >
-                        {remaking ? "Remaking…" : "Remake for Vector"}
+                        {remaking ? "Simplifying…" : "Simplify for Cutting"}
                       </button>
                     )}
                   </div>
