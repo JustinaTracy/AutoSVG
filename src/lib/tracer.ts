@@ -350,11 +350,22 @@ export async function traceImage(
       const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
       const subpaths = splitSubpaths(silD);
 
-      // Classify each subpath: fill-island or hole
-      const sampleBuf = await sharp(preprocessed)
-        .ensureAlpha()
-        .raw()
-        .toBuffer();
+      // Build a per-pixel colour map from the quantized data — same
+      // colour assignments the full-colour trace uses. This is the
+      // source of truth so simplified colours match Full Color exactly.
+      const fgRgb = foreground.map((c) => hexToRgb(c));
+      const pixelColorMap = new Uint8Array(totalPixels);
+      for (let i = 0; i < data.length; i += ch) {
+        const pi = i / ch;
+        if (reallyHasAlpha && !alphaMask[pi]) continue;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        let bestIdx = 0, bestD = Infinity;
+        for (let j = 0; j < fgRgb.length; j++) {
+          const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
+          if (d < bestD) { bestD = d; bestIdx = j; }
+        }
+        pixelColorMap[pi] = bestIdx;
+      }
 
       interface Island {
         sp: string;
@@ -367,52 +378,37 @@ export async function traceImage(
       const islands: Island[] = [];
 
       for (const sp of subpaths) {
-        // Extract multiple sample points along the subpath for robust
-        // colour detection. Single-point sampling fails when a letter's
-        // start point overlaps a different-coloured element above/below.
+        // Sample MULTIPLE points, read from the pixel colour map,
+        // take majority vote. The colour map matches Full Color output.
         const allCoords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
-        if (allCoords.length < 2) continue;
+        if (allCoords.length < 4) continue;
 
-        // Sample up to 5 evenly spaced coordinate pairs
-        const samplePoints: Array<[number, number]> = [];
+        // Gather sample points (every ~20% of the coordinate list)
         const step = Math.max(2, Math.floor(allCoords.length / 10)) * 2;
-        for (let ci = 0; ci < allCoords.length - 1 && samplePoints.length < 5; ci += step) {
+        const votes = new Map<number, number>();
+        let firstPx = 0, firstPy = 0, gotFirst = false;
+
+        for (let ci = 0; ci < allCoords.length - 1; ci += step) {
           const sx = allCoords[ci], sy = allCoords[ci + 1];
-          if (isFinite(sx) && isFinite(sy)) samplePoints.push([sx, sy]);
+          if (!isFinite(sx) || !isFinite(sy)) continue;
+          const spx = Math.max(0, Math.min(width - 1, Math.round(sx)));
+          const spy = Math.max(0, Math.min(height - 1, Math.round(sy)));
+          if (!gotFirst) { firstPx = spx; firstPy = spy; gotFirst = true; }
+          const idx = pixelColorMap[spy * width + spx];
+          votes.set(idx, (votes.get(idx) ?? 0) + 1);
         }
-        if (samplePoints.length === 0) continue;
+        if (!gotFirst) continue;
 
-        // Use the first point as the canonical center for positioning
-        const cx = Math.round(samplePoints[0][0]);
-        const cy = Math.round(samplePoints[0][1]);
-        const px0 = Math.max(0, Math.min(width - 1, cx));
-        const py0 = Math.max(0, Math.min(height - 1, cy));
-        const pixIdx0 = py0 * width + px0;
-
+        const pixIdx0 = firstPy * width + firstPx;
         const isHole = reallyHasAlpha
           ? alphaMask[pixIdx0] === 0
           : silMask[pixIdx0] >= 128;
 
-        // Sample colour at EACH point, take majority vote
-        const colorVotes = new Map<string, number>();
-        for (const [sx, sy] of samplePoints) {
-          const spx = Math.max(0, Math.min(width - 1, Math.round(sx)));
-          const spy = Math.max(0, Math.min(height - 1, Math.round(sy)));
-          const spi = (spy * width + spx) * 4;
-          const r = sampleBuf[spi], g = sampleBuf[spi + 1], b = sampleBuf[spi + 2];
+        // Majority vote from the colour map
+        const bestIdx = [...votes.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        const bestColor = foreground[bestIdx] ?? foreground[0] ?? "#000000";
 
-          let best = foreground[0] ?? "#000000";
-          let bestD = Infinity;
-          for (const fc of foreground) {
-            const [fr, fg, fb] = hexToRgb(fc);
-            const d = (r - fr) ** 2 + (g - fg) ** 2 + (b - fb) ** 2;
-            if (d < bestD) { bestD = d; best = fc; }
-          }
-          colorVotes.set(best, (colorVotes.get(best) ?? 0) + 1);
-        }
-        const bestColor = [...colorVotes.entries()].sort((a, b) => b[1] - a[1])[0][0];
-
-        islands.push({ sp, cx, cy, isHole, color: bestColor });
+        islands.push({ sp, cx: firstPx, cy: firstPy, isHole, color: bestColor });
       }
 
       const fillIslands = islands.filter((i) => !i.isHole);
