@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import Replicate from "replicate";
 
 export const maxDuration = 120;
@@ -19,23 +20,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Convert file to data URI for Replicate
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const base64 = buffer.toString("base64");
-    const mimeType = file.type || "image/png";
-    const dataUri = `data:${mimeType};base64,${base64}`;
+    // Resize to a clean 1024x1024 JPEG for Replicate — keeps the
+    // data URI small and gives Kontext a clear reference image.
+    const rawBuffer = Buffer.from(await file.arrayBuffer());
+    const resized = await sharp(rawBuffer)
+      .resize(1024, 1024, { fit: "inside", withoutEnlargement: true })
+      .flatten({ background: "#ffffff" })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+
+    const dataUri = `data:image/jpeg;base64,${resized.toString("base64")}`;
 
     const output = await replicate.run(
       "black-forest-labs/flux-kontext-pro",
       {
         input: {
           prompt:
-            "Recreate this exact design as a clean flat-colour vector-style illustration. " +
-            "Keep the SAME composition, layout, text, and colour scheme. " +
-            "Use solid flat colours with NO gradients, NO textures, NO shading, NO shadows, NO halftones. " +
-            "Every colour region should be a single solid fill with clean sharp edges. " +
-            "The result should look like a vinyl-cut sticker design — simple, bold, clean outlines. " +
-            "White or transparent background.",
+            "Transform this image into a simplified flat-color vector illustration. " +
+            "Keep the EXACT same subject, character, composition, and pose. " +
+            "Keep the EXACT same color palette — do not change any colors. " +
+            "Replace all gradients, textures, watercolor effects, and shading with solid flat color fills. " +
+            "Each color region should be one solid color with clean sharp edges — like a vinyl sticker cut from colored vinyl. " +
+            "No gradients. No shadows. No texture. No halftones. No 3D effects. " +
+            "Simple bold shapes with clean outlines. White background.",
           image: dataUri,
           aspect_ratio: "1:1",
           output_format: "png",
@@ -44,14 +51,12 @@ export async function POST(request: NextRequest) {
       }
     );
 
-    // Replicate returns a URL (or ReadableStream)
+    // Replicate returns a ReadableStream or URL
     let imageUrl: string;
     if (typeof output === "string") {
       imageUrl = output;
-    } else if (output && typeof (output as Record<string, unknown>).url === "function") {
-      // ReadableStream — read it and convert to base64
-      const stream = output as ReadableStream;
-      const reader = stream.getReader();
+    } else if (output instanceof ReadableStream) {
+      const reader = output.getReader();
       const chunks: Uint8Array[] = [];
       let done = false;
       while (!done) {
@@ -64,7 +69,6 @@ export async function POST(request: NextRequest) {
     } else if (Array.isArray(output) && typeof output[0] === "string") {
       imageUrl = output[0];
     } else {
-      // Try to use output directly as a URL
       imageUrl = String(output);
     }
 
