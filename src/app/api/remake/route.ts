@@ -25,15 +25,23 @@ export async function POST(request: NextRequest) {
     //
     // Result: same image, same subject, but flat simplified colours
     // that trace cleanly. No AI generation, instant, free.
-    const processed = await sharp(rawBuffer)
+    // Step 1: Flatten to white FIRST — before any filtering.
+    // If median runs before flatten, it blends transparent edge
+    // pixels with the alpha channel → dark fringing.
+    const flattened = await sharp(rawBuffer)
       .resize(1500, 1500, { fit: "inside", withoutEnlargement: true })
       .flatten({ background: "#ffffff" })
-      .median(5)          // smooth textures, preserve edges
-      .png({ colours: 8, dither: 0 }) // posterize to 8 flat colours, no dithering
+      .png()
       .toBuffer();
 
-    // One more median pass on the posterized result to clean edges
-    const cleaned = await sharp(processed)
+    // Step 2: Median filter on the already-white-bg image
+    const smoothed = await sharp(flattened)
+      .median(5)
+      .png({ colours: 8, dither: 0 })
+      .toBuffer();
+
+    // Step 3: Clean up posterization edges
+    const cleaned = await sharp(smoothed)
       .median(3)
       .png()
       .toBuffer();
