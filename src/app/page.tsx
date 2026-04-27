@@ -17,6 +17,8 @@ import {
   Scissors,
   Layers,
   Sparkles,
+  Wand2,
+  Loader2,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +93,7 @@ export default function Home() {
   const [stepIndex, setStepIndex] = useState(0);
   const [outputMode, setOutputMode] = useState<"color" | "silhouette">("color");
   const [aiDisabled, setAiDisabled] = useState(false);
+  const [remaking, setRemaking] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Cycle processing-step text
@@ -228,7 +231,71 @@ export default function Home() {
     setOriginalPreview("");
     setResult(null);
     setError("");
+    setRemaking(false);
   }, []);
+
+  const handleRemake = useCallback(async () => {
+    if (!file) return;
+    setRemaking(true);
+
+    // Resize for Replicate if needed (same client-side resize logic)
+    let uploadFile: File | Blob = file;
+    if (file.type !== "image/svg+xml" && file.size > 3 * 1024 * 1024) {
+      try {
+        uploadFile = await resizeImageClientSide(file);
+      } catch {
+        // Use original
+      }
+    }
+
+    const body = new FormData();
+    body.append("file", uploadFile);
+
+    try {
+      const res = await fetch("/api/remake", { method: "POST", body });
+      const data = await res.json();
+
+      if (data.success && data.imageUrl) {
+        // Fetch the remade image, create a File from it, and process it
+        const imgRes = await fetch(data.imageUrl);
+        const imgBlob = await imgRes.blob();
+        const remadeFile = new File([imgBlob], "remade.png", { type: "image/png" });
+
+        // Set it as the new file and re-process
+        setFile(remadeFile);
+        setResult(null);
+        setOutputMode("color");
+        setStatus("processing");
+        setRemaking(false);
+
+        // Build preview
+        const reader = new FileReader();
+        reader.onload = (e) => setOriginalPreview(e.target?.result as string);
+        reader.readAsDataURL(remadeFile);
+
+        // Upload to process
+        const processBody = new FormData();
+        processBody.append("file", remadeFile);
+        if (aiDisabled) processBody.append("noai", "1");
+
+        const processRes = await fetch("/api/process", { method: "POST", body: processBody });
+        const processData = await processRes.json();
+        if (processData.success) {
+          setResult(processData);
+          setStatus("done");
+        } else {
+          setError(processData.error || "Processing remade image failed.");
+          setStatus("error");
+        }
+      } else {
+        setError(data.error || "Remake failed.");
+        setRemaking(false);
+      }
+    } catch {
+      setError("Failed to reach the remake server.");
+      setRemaking(false);
+    }
+  }, [file, aiDisabled]);
 
   /* ── Render ───────────────────────────────────────────────── */
 
@@ -533,6 +600,19 @@ export default function Home() {
                   <Download size={18} />
                   Download Cut-Ready SVG
                 </button>
+                {result.analysis.originalType !== "svg" && (
+                  <button
+                    onClick={handleRemake}
+                    disabled={remaking}
+                    className="inline-flex items-center gap-2 rounded-full border border-plum-wine-500 bg-plum-wine-50 px-6 py-3.5 font-body text-base font-semibold text-plum-wine-700 transition-colors hover:bg-plum-wine-100 disabled:opacity-50"
+                  >
+                    {remaking ? (
+                      <><Loader2 size={18} className="animate-spin" /> Remaking&hellip;</>
+                    ) : (
+                      <><Wand2 size={18} /> Remake for Vector</>
+                    )}
+                  </button>
+                )}
                 <button
                   onClick={handleReset}
                   className="inline-flex items-center gap-2 rounded-full border border-plum-wine-700 px-6 py-3.5 font-body text-base font-semibold text-plum-wine-700 transition-colors hover:bg-plum-wine-50"
