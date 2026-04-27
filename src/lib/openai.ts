@@ -232,28 +232,27 @@ export async function analyzeLayerStrategyWithRetry(
 /*  Simplified: AI island colouring                                    */
 /* ------------------------------------------------------------------ */
 
-export interface IslandColorAssignment {
-  index: number;
+export interface IslandGroup {
+  name: string;
   color: string;
+  islands: number[];
 }
 
 /**
- * Ask GPT-4o to look at the image and assign colours to silhouette
- * islands for the "Simplified" mode. The AI understands context —
- * it knows "DAYS" is one word, "Smarter" is another, and different
- * characters can have different colours.
+ * Ask GPT-4o to look at the image, NAME each island, GROUP them
+ * logically (e.g. "12 stars", "word PAJAMA", "word DAY"), and
+ * assign one colour per group from the available palette.
  */
-export async function assignIslandColors(
+export async function groupAndColorIslands(
   imageBase64: string,
   mimeType: string,
-  islands: Array<{ index: number; cx: number; cy: number; isHole: boolean }>,
+  islands: Array<{ index: number; cx: number; cy: number }>,
   availableColors: string[]
-): Promise<IslandColorAssignment[]> {
-  const fillIslands = islands.filter((i) => !i.isHole);
-  if (fillIslands.length === 0) return [];
+): Promise<IslandGroup[]> {
+  if (islands.length === 0) return [];
 
-  const islandList = fillIslands
-    .map((i) => `#${i.index} at (${i.cx}, ${i.cy})`)
+  const islandList = islands
+    .map((i) => `#${i.index} at (${Math.round(i.cx)}, ${Math.round(i.cy)})`)
     .join(", ");
 
   const response = await openai.chat.completions.create({
@@ -272,21 +271,27 @@ export async function assignIslandColors(
           },
           {
             type: "text",
-            text: `I've broken this design into separate vector islands (pieces) for a simplified vinyl cut version. Each island is a shape at a position in the image.
+            text: `I've broken this design's silhouette into separate vector islands. Each island is a shape at a position in the image. I need you to NAME and GROUP them for a simplified coloured vinyl cut.
 
-Islands (fill pieces only): ${islandList}
+Islands: ${islandList}
 
-Available colours from the original: ${JSON.stringify(availableColors)}
+Available colours: ${JSON.stringify(availableColors)}
 
-Assign each island a colour from the available list. RULES:
-- All letters in the SAME WORD must be the same colour
-- All parts of the same visual element must be the same colour
-- Match colours to what that area looks like in the original image
-- Use the available colours only
+STEP 1: Identify what each island IS by its position in the image (a letter, a star, a flower, a character, etc.)
+STEP 2: Group islands that belong together:
+  - All letters in the SAME WORD → one group (e.g. "Word: DAYS")
+  - Repeated decorative elements → one group (e.g. "Stars" or "Flowers")
+  - Distinct characters/objects → their own group
+STEP 3: Pick ONE colour per group from the available list that best matches what that group looks like in the original image.
 
-Return JSON: { "assignments": [ { "index": 0, "color": "#hex" }, ... ] }
+Return JSON:
+{
+  "groups": [
+    { "name": "descriptive group name", "color": "#hex", "islands": [0, 1, 2] }
+  ]
+}
 
-Return an assignment for EVERY island index listed above.`,
+Every island index MUST appear in exactly one group. Use the hex values from the available colours list exactly as given.`,
           },
         ],
       },
@@ -295,7 +300,7 @@ Return an assignment for EVERY island index listed above.`,
   });
 
   const data = JSON.parse(response.choices[0].message.content || "{}");
-  return data.assignments ?? [];
+  return data.groups ?? [];
 }
 
 /* ------------------------------------------------------------------ */

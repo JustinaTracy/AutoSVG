@@ -15,7 +15,7 @@
 
 import sharp from "sharp";
 import potrace from "potrace";
-import { analyzeLayerStrategyWithRetry, assignIslandColors, type LayerStrategy } from "./openai";
+import { analyzeLayerStrategyWithRetry, groupAndColorIslands, type LayerStrategy } from "./openai";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -350,140 +350,104 @@ export async function traceImage(
       const silD = silhouetteSVG.match(/\bd="([^"]*)"/)?.[1] ?? "";
       const subpaths = splitSubpaths(silD);
 
-      // Build a per-pixel colour map from the quantized data — same
-      // colour assignments the full-colour trace uses. This is the
-      // source of truth so simplified colours match Full Color exactly.
-      const fgRgb = foreground.map((c) => hexToRgb(c));
-      const pixelColorMap = new Uint8Array(totalPixels);
-      for (let i = 0; i < data.length; i += ch) {
-        const pi = i / ch;
-        if (reallyHasAlpha && !alphaMask[pi]) continue;
-        const r = data[i], g = data[i + 1], b = data[i + 2];
-        let bestIdx = 0, bestD = Infinity;
-        for (let j = 0; j < fgRgb.length; j++) {
-          const d = (r - fgRgb[j][0]) ** 2 + (g - fgRgb[j][1]) ** 2 + (b - fgRgb[j][2]) ** 2;
-          if (d < bestD) { bestD = d; bestIdx = j; }
-        }
-        pixelColorMap[pi] = bestIdx;
-      }
-
+      // Classify each subpath as fill-island or hole
       interface Island {
         sp: string;
         cx: number;
         cy: number;
         isHole: boolean;
-        color: string;
       }
 
       const islands: Island[] = [];
-
       for (const sp of subpaths) {
-        // Sample MULTIPLE points, read from the pixel colour map,
-        // take majority vote. The colour map matches Full Color output.
-        const allCoords = [...sp.matchAll(/-?[\d.]+/g)].map(Number);
-        if (allCoords.length < 4) continue;
-
-        // Gather sample points (every ~20% of the coordinate list)
-        const step = Math.max(2, Math.floor(allCoords.length / 10)) * 2;
-        const votes = new Map<number, number>();
-        let firstPx = 0, firstPy = 0, gotFirst = false;
-
-        for (let ci = 0; ci < allCoords.length - 1; ci += step) {
-          const sx = allCoords[ci], sy = allCoords[ci + 1];
-          if (!isFinite(sx) || !isFinite(sy)) continue;
-          const spx = Math.max(0, Math.min(width - 1, Math.round(sx)));
-          const spy = Math.max(0, Math.min(height - 1, Math.round(sy)));
-          if (!gotFirst) { firstPx = spx; firstPy = spy; gotFirst = true; }
-          const idx = pixelColorMap[spy * width + spx];
-          votes.set(idx, (votes.get(idx) ?? 0) + 1);
-        }
-        if (!gotFirst) continue;
-
-        const pixIdx0 = firstPy * width + firstPx;
+        const firstCoords = sp.match(/[Mm]\s*(-?[\d.]+)\s*[\s,]\s*(-?[\d.]+)/);
+        if (!firstCoords) continue;
+        const cx = parseFloat(firstCoords[1]);
+        const cy = parseFloat(firstCoords[2]);
+        const px0 = Math.max(0, Math.min(width - 1, Math.round(cx)));
+        const py0 = Math.max(0, Math.min(height - 1, Math.round(cy)));
+        const pixIdx0 = py0 * width + px0;
         const isHole = reallyHasAlpha
           ? alphaMask[pixIdx0] === 0
           : silMask[pixIdx0] >= 128;
-
-        // Majority vote from the colour map
-        const bestIdx = [...votes.entries()].sort((a, b) => b[1] - a[1])[0][0];
-        const bestColor = foreground[bestIdx] ?? foreground[0] ?? "#000000";
-
-        islands.push({ sp, cx: firstPx, cy: firstPy, isHole, color: bestColor });
+        islands.push({ sp, cx, cy, isHole });
       }
 
       const fillIslands = islands.filter((i) => !i.isHole);
       const holeIslands = islands.filter((i) => i.isHole);
-      console.log(`[simplified] Islands: ${islands.length} total, ${fillIslands.length} fills, ${holeIslands.length} holes`);
+      console.log(`[simplified] ${fillIslands.length} fills, ${holeIslands.length} holes`);
 
       if (fillIslands.length >= 2) {
-        // Ask AI to assign colours intelligently — it understands
-        // which islands form words, which are separate elements, etc.
+        // Ask AI to NAME, GROUP, and COLOR the islands.
+        // AI sees the image + island positions, identifies what each is
+        // (letters of a word, stars, characters), groups them, picks colors.
+        let aiGroups: Array<{ name: string; color: string; islands: number[] }> = [];
         try {
           const thumbBuf = await sharp(preprocessed)
             .resize(600, 600, { fit: "inside", withoutEnlargement: true })
             .jpeg({ quality: 60 })
             .toBuffer();
 
-          const islandPositions = islands.map((isl, idx) => ({
+          const fillPositions = fillIslands.map((isl, idx) => ({
             index: idx,
             cx: isl.cx,
             cy: isl.cy,
-            isHole: isl.isHole,
           }));
 
-          const assignments = await assignIslandColors(
+          aiGroups = await groupAndColorIslands(
             thumbBuf.toString("base64"),
             "image/jpeg",
-            islandPositions,
+            fillPositions,
             foreground
           );
-
-          // Apply AI assignments
-          for (const a of assignments) {
-            if (a.index >= 0 && a.index < islands.length) {
-              islands[a.index].color = a.color.toLowerCase();
-            }
-          }
-          console.log(`[simplified] AI assigned ${assignments.length} islands`);
+          console.log(`[simplified] AI returned ${aiGroups.length} groups`);
         } catch (err) {
-          console.error("[simplified] AI island colouring failed:", err);
-          // AI failed — keep the pixel-sampled colours
+          console.error("[simplified] AI grouping failed:", err);
         }
-        // Assign each hole to its nearest fill island (the one that "owns" it)
-        for (const hole of holeIslands) {
-          let nearestFill = fillIslands[0];
-          let nearestDist = Infinity;
-          for (const fill of fillIslands) {
-            const d = (hole.cx - fill.cx) ** 2 + (hole.cy - fill.cy) ** 2;
-            if (d < nearestDist) { nearestDist = d; nearestFill = fill; }
+
+        if (aiGroups.length >= 2) {
+          // Build compound paths per AI group
+          const simPaths: string[] = [];
+
+          for (const group of aiGroups) {
+            // Collect fill-island subpaths for this group
+            const groupSps: string[] = [];
+            for (const idx of group.islands) {
+              if (idx >= 0 && idx < fillIslands.length) {
+                groupSps.push(fillIslands[idx].sp);
+              }
+            }
+            if (groupSps.length === 0) continue;
+
+            // Find holes that belong to this group's islands
+            // (hole's nearest fill island is in this group)
+            for (const hole of holeIslands) {
+              let nearestIdx = 0;
+              let nearestDist = Infinity;
+              for (let fi = 0; fi < fillIslands.length; fi++) {
+                const d = (hole.cx - fillIslands[fi].cx) ** 2 +
+                          (hole.cy - fillIslands[fi].cy) ** 2;
+                if (d < nearestDist) { nearestDist = d; nearestIdx = fi; }
+              }
+              if (group.islands.includes(nearestIdx)) {
+                groupSps.push(hole.sp);
+              }
+            }
+
+            const color = group.color.toLowerCase();
+            simPaths.push(`<path d="${groupSps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
           }
-          // Give the hole the same colour as its owner
-          hole.color = nearestFill.color;
-        }
 
-        // Group all islands (fills + their holes) by colour
-        const colorGroups = new Map<string, string[]>();
-        for (const island of islands) {
-          if (!colorGroups.has(island.color)) colorGroups.set(island.color, []);
-          colorGroups.get(island.color)!.push(island.sp);
-        }
-
-        // Build compound path per colour
-        const simPaths: string[] = [];
-        for (const [color, sps] of colorGroups) {
-          if (sps.length === 0) continue;
-          simPaths.push(`<path d="${sps.join(" ")}" fill="${color}" fill-rule="evenodd"/>`);
-        }
-
-        if (simPaths.length > 1) {
-          simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
-          simplifiedLayers = [...colorGroups.entries()]
-            .filter(([, sps]) => sps.length > 0)
-            .map(([color, sps]) => ({
-              name: `Layer (${color})`,
-              color,
-              pathCount: sps.length,
-            }));
+          if (simPaths.length > 1) {
+            simplifiedSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">\n${simPaths.join("\n")}\n</svg>`;
+            simplifiedLayers = aiGroups
+              .filter((g) => g.islands.length > 0)
+              .map((g) => ({
+                name: g.name,
+                color: g.color.toLowerCase(),
+                pathCount: g.islands.length,
+              }));
+          }
         }
       }
     } catch {
