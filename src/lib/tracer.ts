@@ -117,7 +117,7 @@ export async function traceImage(
   const hasAlpha = !!(meta.channels && meta.channels >= 4 && meta.hasAlpha);
 
   // ── 2. Resize and read raw RGBA (before flattening) ────────────
-  const resized = sharp(imageBuffer).resize(1500, 1500, {
+  const resized = sharp(imageBuffer).resize(3000, 3000, {
     fit: "inside",
     withoutEnlargement: true,
   });
@@ -286,15 +286,15 @@ export async function traceImage(
     // Median is a majority-vote filter, NOT a blur — edges stay sharp.
     const silSharp = sharp(silMask, { raw: { width, height, channels: 1 } });
     const silPng = reallyHasAlpha
-      ? await silSharp.median(5).png().toBuffer()
+      ? await silSharp.median(3).png().toBuffer()
       : await silSharp.png().toBuffer();
     try {
       const silTraced = await traceAsync(silPng, {
         threshold: 128,
         color: "#000000",
         background: "transparent",
-        turdSize: 300,  // aggressive — silhouettes should be clean outlines
-        optTolerance: 2.0,
+        turdSize: 30,
+        optTolerance: 0.2,
       });
       const silPaths: string[] = [];
       for (const m of silTraced.matchAll(/<path\b[^>]*>/gi)) {
@@ -391,7 +391,7 @@ export async function traceImage(
     const sharpMask = sharp(mask, { raw: { width, height, channels: 1 } });
     const maskPng =
       strategy?.fillHoles
-        ? await sharpMask.blur(6).threshold(128).png().toBuffer()
+        ? await sharpMask.blur(2).threshold(128).png().toBuffer()
         : await sharpMask.png().toBuffer();
 
     try {
@@ -399,10 +399,8 @@ export async function traceImage(
         threshold: 128,
         color: color,
         background: "transparent",
-        turdSize: 100,
-        // optTolerance: curve-fitting tolerance. Lower = crisper edges.
-        // 0.8 gives sharp detail without pixel-level jaggedness.
-        optTolerance: 0.8,
+        turdSize: 15,
+        optTolerance: 0.2,
       });
 
       // Pull <path> elements out of potrace's SVG
